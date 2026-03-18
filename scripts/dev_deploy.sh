@@ -127,6 +127,16 @@ if [[ "$command" == "latest" ]]; then
 fi
 
 current_branch="$(ensure_branch_ready_for_dev_deploy)"
+
+# 防重复部署：检查当前分支的最新提交是否已经在最新成功部署中
+if check_if_latest_commit_deployed "$latest_summary_json" "$current_branch"; then
+  printf '⚠️ 当前分支 %s 的最新提交已在最近成功部署中，跳过触发\n' "$current_branch"
+  printf 'skip_reason=already_deployed\n'
+  printf 'latest_deploy_time=%s\n' "$(printf '%s' "$latest_summary_json" | jq -r '.createTime // empty')"
+  printf 'last_commit_time=%s\n' "$(git log -1 --format=%ci HEAD 2>/dev/null || true)"
+  exit 0
+fi
+
 run_comment="$comment"
 if [[ -z "$run_comment" ]]; then
   run_comment="dev deploy from https://github.com/eddiearc/yunxiao-dev-deploy: ${current_branch}"
