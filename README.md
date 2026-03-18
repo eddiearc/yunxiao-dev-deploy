@@ -1,6 +1,6 @@
 # yunxiao-dev-deploy
 
-阿里云云效 dev 部署 Skill，面向 Codex、Claude Code 等本地 skill 目录。
+阿里云云效 dev 部署 skill，兼容 [skills](https://github.com/vercel-labs/skills) 分发方式，可安装到 Codex、Claude Code 等 agent。
 
 它解决的是一个常见但容易出错的流程：
 
@@ -26,6 +26,42 @@ examples/
 ```
 
 ## 安装
+
+推荐直接用 `skills` CLI 从 GitHub 安装。
+
+同时安装到 Codex 和 Claude Code：
+
+```bash
+npx skills add eddiearc/yunxiao-dev-deploy -g -a codex -a claude-code -y
+```
+
+只安装到 Codex：
+
+```bash
+npx skills add eddiearc/yunxiao-dev-deploy -g -a codex -y
+```
+
+只安装到 Claude Code：
+
+```bash
+npx skills add eddiearc/yunxiao-dev-deploy -g -a claude-code -y
+```
+
+查看是否安装成功：
+
+```bash
+npx skills ls -g
+```
+
+更新：
+
+```bash
+npx skills update
+```
+
+### 手工安装
+
+如果你不想依赖 `skills` CLI，也可以手工复制。
 
 把这个目录复制到你的 agent skills 目录。
 
