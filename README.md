@@ -1,4 +1,4 @@
-# yunxiao-dev-deploy-skill
+# yunxiao-dev-deploy
 
 阿里云云效 dev 部署 Skill，面向 Codex 风格的本地 skill 目录。
 
@@ -31,7 +31,7 @@ examples/
 
 ```bash
 mkdir -p "$CODEX_HOME/skills"
-cp -R yunxiao-dev-deploy-skill "$CODEX_HOME/skills/yunxiao-dev-deploy"
+cp -R yunxiao-dev-deploy "$CODEX_HOME/skills/yunxiao-dev-deploy"
 ```
 
 如果你的环境没有设置 `CODEX_HOME`，通常是 `~/.codex`。
