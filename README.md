@@ -1,6 +1,6 @@
 # yunxiao-dev-deploy
 
-阿里云云效 dev 部署 Skill，面向 Codex 风格的本地 skill 目录。
+阿里云云效 dev 部署 Skill，面向 Codex、Claude Code 等本地 skill 目录。
 
 它解决的是一个常见但容易出错的流程：
 
@@ -27,7 +27,9 @@ examples/
 
 ## 安装
 
-把这个目录复制到你的 Codex skills 目录：
+把这个目录复制到你的 agent skills 目录。
+
+Codex：
 
 ```bash
 mkdir -p "$CODEX_HOME/skills"
@@ -35,6 +37,13 @@ cp -R yunxiao-dev-deploy "$CODEX_HOME/skills/yunxiao-dev-deploy"
 ```
 
 如果你的环境没有设置 `CODEX_HOME`，通常是 `~/.codex`。
+
+Claude Code：
+
+```bash
+mkdir -p "$HOME/.claude/skills"
+cp -R yunxiao-dev-deploy "$HOME/.claude/skills/yunxiao-dev-deploy"
+```
 
 ## 项目内配置
 
@@ -64,32 +73,32 @@ YUNXIAO_DEV_PIPELINE_ID="your_dev_pipeline_id"
 查看最近一次成功部署：
 
 ```bash
-bash "$CODEX_HOME/skills/yunxiao-dev-deploy/scripts/dev_deploy.sh" latest
+bash scripts/dev_deploy.sh latest
 ```
 
 只做预检查：
 
 ```bash
-bash "$CODEX_HOME/skills/yunxiao-dev-deploy/scripts/dev_deploy.sh" run --dry-run
+bash scripts/dev_deploy.sh run --dry-run
 ```
 
 执行部署：
 
 ```bash
-bash "$CODEX_HOME/skills/yunxiao-dev-deploy/scripts/dev_deploy.sh" run
+bash scripts/dev_deploy.sh run
 ```
 
 首次通过链接注入流水线 ID：
 
 ```bash
-bash "$CODEX_HOME/skills/yunxiao-dev-deploy/scripts/dev_deploy.sh" run \
+bash scripts/dev_deploy.sh run \
   --pipeline-link "https://flow.aliyun.com/pipelines/123456/current"
 ```
 
 等待某次运行：
 
 ```bash
-bash "$CODEX_HOME/skills/yunxiao-dev-deploy/scripts/wait_pipeline_run.sh" 1234
+bash scripts/wait_pipeline_run.sh 1234
 ```
 
 ## 依赖
