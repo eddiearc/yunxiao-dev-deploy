@@ -175,7 +175,17 @@ bash scripts/wait_pipeline_run.sh 1234
 - 当前 dev 最近一次成功部署的运行 ID
 - release 分支名
 - 已集成的业务分支列表
+- **部署时间戳与本地最后 commit 时间对比**，判断最新代码是否已部署
 - 如果存在正在运行且被阻塞的实例，返回阻塞阶段、任务、动作类型和关键信息
+
+**时间对比逻辑**：
+
+```
+部署触发时间 >= 本地最后 commit 时间 → latest_commit_deployed=true
+部署触发时间 < 本地最后 commit 时间 → latest_commit_deployed=false (需要重新部署)
+```
+
+这样可以准确判断当前分支的最新改动是否已经被部署，而不仅仅看分支名是否在列表里。
 
 执行 `run` 时，返回：
 

@@ -336,6 +336,7 @@ fetch_latest_successful_run_summary() {
   printf '%s' "$API_BODY" | jq -c '
     {
       pipelineRunId: .pipelineRunId,
+      createTime: .createTime,
       releaseBranch: (.sources[0].data.branch // ""),
       branches: (
         reduce (
@@ -478,4 +479,58 @@ trigger_pipeline_run() {
   fi
 
   printf '%s\n' "$API_BODY"
+}
+
+# Get the timestamp of the last commit on the current branch
+get_last_commit_timestamp() {
+  # Returns Unix timestamp (seconds since epoch)
+  git log -1 --format=%ct HEAD 2>/dev/null
+}
+
+# Check if the latest deployment includes the latest commit on the current branch
+# Returns 0 if deployed (deployment time >= commit time), 1 if not
+check_if_latest_commit_deployed() {
+  local latest_summary_json="$1"
+  local current_branch="$2"
+
+  local deploy_create_time commit_timestamp deploy_timestamp
+
+  # Get deployment create time (can be milliseconds timestamp or ISO 8601)
+  deploy_create_time="$(printf '%s' "$latest_summary_json" | jq -r '.createTime // empty')"
+
+  if [[ -z "$deploy_create_time" ]]; then
+    return 1
+  fi
+
+  # Check if current branch is in the deployed branches
+  if ! printf '%s' "$latest_summary_json" | jq -e --arg branch "$current_branch" '(.branches // []) | index($branch)' >/dev/null 2>&1; then
+    return 1
+  fi
+
+  # Get last commit timestamp on current branch
+  commit_timestamp="$(get_last_commit_timestamp)"
+  if [[ -z "$commit_timestamp" ]]; then
+    return 1
+  fi
+
+  # Convert deploy time to Unix timestamp
+  # Handle both milliseconds timestamp (number) and ISO 8601 string
+  if [[ "$deploy_create_time" =~ ^[0-9]+$ ]]; then
+    # Milliseconds timestamp - convert to seconds
+    deploy_timestamp=$((deploy_create_time / 1000))
+  else
+    # ISO 8601 format - convert to Unix timestamp (macOS/BSD date compatible)
+    deploy_timestamp="$(date -j -f "%Y-%m-%dT%H:%M:%S%z" "$deploy_create_time" +%s 2>/dev/null || date -d "$deploy_create_time" +%s 2>/dev/null)"
+  fi
+
+  if [[ -z "$deploy_timestamp" ]]; then
+    return 1
+  fi
+
+  # Compare: if deployment time >= commit time, the commit is deployed
+  if [[ "$deploy_timestamp" -ge "$commit_timestamp" ]]; then
+    return 0
+  else
+    return 1
+  fi
 }

@@ -89,6 +89,27 @@ if [[ "$command" == "latest" ]]; then
   printf 'latest_success_run_id=%s\n' "${latest_run_id:-none}"
   printf 'latest_release_branch=%s\n' "${latest_release_branch:-none}"
   printf 'latest_integrated_branches=%s\n' "${latest_branches:-none}"
+
+  # Get current branch for deployment status check
+  current_branch_for_check="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  if [[ -n "$current_branch_for_check" && "$current_branch_for_check" != "HEAD" ]]; then
+    latest_deploy_time="$(printf '%s' "$latest_summary_json" | jq -r '.createTime // empty')"
+    if [[ -n "$latest_deploy_time" ]]; then
+      printf 'latest_deploy_time=%s\n' "$latest_deploy_time"
+    fi
+
+    last_commit_time="$(git log -1 --format=%ci HEAD 2>/dev/null || true)"
+    if [[ -n "$last_commit_time" ]]; then
+      printf 'last_commit_time=%s\n' "$last_commit_time"
+    fi
+
+    if check_if_latest_commit_deployed "$latest_summary_json" "$current_branch_for_check"; then
+      printf 'latest_commit_deployed=true\n'
+    else
+      printf 'latest_commit_deployed=false\n'
+    fi
+  fi
+
   if [[ -n "$running_run_id" ]]; then
     running_run_detail="$(fetch_pipeline_run_detail "$organization_id" "$pipeline_id" "$running_run_id")"
     blocking_json="$(extract_blocking_actions "$running_run_detail")"
