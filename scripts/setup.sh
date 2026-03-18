@@ -27,6 +27,22 @@ error() {
   printf '%b\n' "${RED}$*${NC}" >&2
 }
 
+print_permission_matrix() {
+  cat <<'EOF'
+执行完整 dev 部署，建议在 Personal Access Token 里至少勾选：
+- 组织管理 / 所有权限点只读
+  用于自动发现 organizationId；如果项目里已经固定配置 organizationId，可以不依赖这一项
+- 流水线 / 只读
+  用于读取流水线详情，避免误触 prod 流水线
+- 流水线运行实例 / 读写
+  用于触发 dev 部署；如果你只想执行 latest 查询，可以把这一项降为只读
+
+可选：
+- 流水线运行任务 / 只读
+  当前脚本不强依赖这一项；如果你后续还要查询任务日志，建议一并勾上
+EOF
+}
+
 detect_shell_rc() {
   case "${SHELL:-}" in
     */zsh)
@@ -82,6 +98,7 @@ test_token() {
 
   if [[ "$status" == "200" ]]; then
     success "Token 校验成功，可以访问组织列表接口。"
+    warning "这只验证了“组织管理 / 所有权限点只读”，不代表已经具备触发流水线所需的写权限。"
   elif [[ "$status" == "403" ]]; then
     warning "Token 已保存，但当前没有足够权限访问组织列表。"
     warning "请检查是否勾选了“组织管理 / 所有权限点只读”。"
@@ -116,9 +133,7 @@ if [[ "$reuse_existing_token" != "true" ]]; then
   printf '请先在以下地址生成 Personal Access Token:\n'
   printf 'https://account-devops.aliyun.com/settings/personalAccessToken\n'
   printf '\n'
-  printf '至少勾选以下只读权限:\n'
-  printf -- '- 组织管理：所有权限点只读\n'
-  printf -- '- 流水线：所有权限点只读\n'
+  print_permission_matrix
   printf '\n'
   read -r -p "请输入你的 Yunxiao Token: " yunxiao_token
 
@@ -146,6 +161,8 @@ fi
 printf '\n'
 info '正在测试 Yunxiao Token 连通性...'
 test_token "${YUNXIAO_ACCESS_TOKEN}"
+printf '\n'
+print_permission_matrix
 
 printf '\n'
 read -r -p "是否自动追加到你的 shell 配置，以便后续会话自动加载? (y/N): " auto_load

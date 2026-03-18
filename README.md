@@ -94,7 +94,7 @@ bash scripts/setup.sh
 
 - 把 `YUNXIAO_ACCESS_TOKEN` 保存到 `~/.yunxiao/config.sh`
 - 可选追加 `source ~/.yunxiao/config.sh` 到 `~/.zshrc` 或 `~/.bashrc`
-- 顺手验证 token 是否能访问组织列表接口
+- 顺手验证 token 是否能访问组织列表接口，并提醒完整 dev 部署所需的额外权限
 
 如果你不想跑向导，也可以手动配置：
 
@@ -126,10 +126,23 @@ YUNXIAO_DEV_PIPELINE_ID="your_dev_pipeline_id"
 
 - <https://account-devops.aliyun.com/settings/personalAccessToken>
 
-建议至少勾选：
+执行完整 dev 部署，建议至少勾选：
 
-- `组织管理`：所有权限点只读
-- `流水线`：所有权限点只读
+- `组织管理 / 所有权限点只读`
+- `流水线 / 只读`
+- `流水线运行实例 / 读写`
+
+可选补充：
+
+- `流水线运行任务 / 只读`
+
+权限矩阵：
+
+- `dev_deploy.sh latest`：`流水线 / 只读` + `流水线运行实例 / 只读`
+- `dev_deploy.sh run`：`流水线 / 只读` + `流水线运行实例 / 读写`
+- `wait_pipeline_run.sh`：`流水线运行实例 / 只读`
+- 自动发现 `organizationId`：`组织管理 / 所有权限点只读`
+- 查看任务日志：`流水线运行任务 / 只读`
 
 ## 用法
 

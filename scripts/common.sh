@@ -9,6 +9,55 @@ die() {
   exit 1
 }
 
+print_permission_hint() {
+  local scope="$1"
+
+  case "$scope" in
+    organization-read)
+      cat >&2 <<'EOF'
+当前操作需要以下 Personal Access Token 权限：
+- 组织管理 / 所有权限点只读
+EOF
+      ;;
+    pipeline-read)
+      cat >&2 <<'EOF'
+当前操作需要以下 Personal Access Token 权限：
+- 流水线 / 只读
+EOF
+      ;;
+    pipeline-run-read)
+      cat >&2 <<'EOF'
+当前操作需要以下 Personal Access Token 权限：
+- 流水线运行实例 / 只读
+EOF
+      ;;
+    pipeline-run-write)
+      cat >&2 <<'EOF'
+当前操作需要以下 Personal Access Token 权限：
+- 流水线 / 只读
+- 流水线运行实例 / 读写
+
+如果你后续还要查看任务日志，可再补：
+- 流水线运行任务 / 只读
+EOF
+      ;;
+  esac
+}
+
+die_permission_denied() {
+  local operation="$1"
+  local scope="$2"
+
+  {
+    echo "${operation}失败。HTTP 403: 当前 token 没有访问这个 API 的权限。"
+    print_permission_hint "$scope"
+    echo "请到以下地址更新 Personal Access Token 后重试："
+    echo "https://account-devops.aliyun.com/settings/personalAccessToken"
+  } >&2
+
+  exit 1
+}
+
 repo_root() {
   git rev-parse --show-toplevel 2>/dev/null
 }
@@ -161,7 +210,7 @@ resolve_organization_id() {
 
   if ! api_request GET "/oapi/v1/platform/organizations"; then
     if [[ "$API_STATUS" == "403" ]]; then
-      die "获取 organizationId 失败。当前 token 缺少组织管理只读权限，请检查“组织管理 / 所有权限点只读”。"
+      die_permission_denied "获取 organizationId" "organization-read"
     fi
     die "获取 organizationId 失败。HTTP ${API_STATUS}: ${API_BODY}"
   fi
@@ -245,6 +294,9 @@ fetch_pipeline_detail() {
   local pipeline_id="$2"
 
   if ! api_request GET "/oapi/v1/flow/organizations/${organization_id}/pipelines/${pipeline_id}"; then
+    if [[ "$API_STATUS" == "403" ]]; then
+      die_permission_denied "获取流水线详情" "pipeline-read"
+    fi
     die "获取流水线详情失败。HTTP ${API_STATUS}: ${API_BODY}"
   fi
 }
@@ -262,6 +314,9 @@ fetch_latest_successful_run_summary() {
   local run_id
 
   if ! api_request GET "/oapi/v1/flow/organizations/${organization_id}/pipelines/${pipeline_id}/runs?perPage=20&page=1"; then
+    if [[ "$API_STATUS" == "403" ]]; then
+      die_permission_denied "获取流水线运行列表" "pipeline-run-read"
+    fi
     die "获取流水线运行列表失败。HTTP ${API_STATUS}: ${API_BODY}"
   fi
 
@@ -272,6 +327,9 @@ fetch_latest_successful_run_summary() {
   fi
 
   if ! api_request GET "/oapi/v1/flow/organizations/${organization_id}/pipelines/${pipeline_id}/runs/${run_id}"; then
+    if [[ "$API_STATUS" == "403" ]]; then
+      die_permission_denied "获取最近成功运行详情" "pipeline-run-read"
+    fi
     die "获取最近成功运行详情失败。HTTP ${API_STATUS}: ${API_BODY}"
   fi
 
@@ -300,6 +358,9 @@ fetch_latest_running_run_id() {
   local pipeline_id="$2"
 
   if ! api_request GET "/oapi/v1/flow/organizations/${organization_id}/pipelines/${pipeline_id}/runs?perPage=20&page=1"; then
+    if [[ "$API_STATUS" == "403" ]]; then
+      die_permission_denied "获取流水线运行列表" "pipeline-run-read"
+    fi
     die "获取流水线运行列表失败。HTTP ${API_STATUS}: ${API_BODY}"
   fi
 
@@ -312,6 +373,9 @@ fetch_pipeline_run_detail() {
   local run_id="$3"
 
   if ! api_request GET "/oapi/v1/flow/organizations/${organization_id}/pipelines/${pipeline_id}/runs/${run_id}"; then
+    if [[ "$API_STATUS" == "403" ]]; then
+      die_permission_denied "获取流水线运行详情" "pipeline-run-read"
+    fi
     die "获取流水线运行详情失败。HTTP ${API_STATUS}: ${API_BODY}"
   fi
 
@@ -407,6 +471,9 @@ trigger_pipeline_run() {
   body="$(jq -cn --arg params "$params_json" '{params: $params}')"
 
   if ! api_request POST "/oapi/v1/flow/organizations/${organization_id}/pipelines/${pipeline_id}/runs" "$body"; then
+    if [[ "$API_STATUS" == "403" ]]; then
+      die_permission_denied "触发流水线" "pipeline-run-write"
+    fi
     die "触发流水线失败。HTTP ${API_STATUS}: ${API_BODY}"
   fi
 
