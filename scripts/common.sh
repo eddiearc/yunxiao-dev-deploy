@@ -13,26 +13,41 @@ repo_root() {
   git rev-parse --show-toplevel 2>/dev/null
 }
 
+global_config_file() {
+  echo "${HOME}/.yunxiao/config.sh"
+}
+
 project_env_file() {
   echo "$(repo_root)/.yunxiao/project.env"
 }
 
-load_project_env() {
-  local env_file
+load_env_file_if_unset() {
+  local env_file="$1"
   local line
   local key
   local value
-  env_file="$(project_env_file)"
+
   if [[ -f "$env_file" ]]; then
     while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line#"${line%%[![:space:]]*}"}"
       [[ -z "$line" ]] && continue
-      [[ "$line" =~ ^[[:space:]]*# ]] && continue
+      [[ "$line" =~ ^# ]] && continue
+
+      if [[ "$line" == export[[:space:]]* ]]; then
+        line="${line#export}"
+        line="${line#"${line%%[![:space:]]*}"}"
+      fi
+
       [[ "$line" != *=* ]] && continue
 
       key="${line%%=*}"
+      key="${key%"${key##*[![:space:]]}"}"
       value="${line#*=}"
+      value="${value#"${value%%[![:space:]]*}"}"
       value="${value#\"}"
       value="${value%\"}"
+      value="${value#\'}"
+      value="${value%\'}"
 
       if [[ -z "${!key+x}" ]]; then
         printf -v "$key" '%s' "$value"
@@ -40,6 +55,14 @@ load_project_env() {
       fi
     done <"$env_file"
   fi
+}
+
+load_global_env() {
+  load_env_file_if_unset "$(global_config_file)"
+}
+
+load_project_env() {
+  load_env_file_if_unset "$(project_env_file)"
 }
 
 save_project_env_var() {
@@ -72,11 +95,13 @@ save_project_env_var() {
 }
 
 ensure_yunxiao_token() {
+  load_global_env
+
   if [[ -n "${YUNXIAO_ACCESS_TOKEN:-}" ]]; then
     return 0
   fi
 
-  cat >&2 <<'EOF'
+  cat >&2 <<EOF
 缺少 YUNXIAO_ACCESS_TOKEN。
 
 请先去这里生成个人 AccessToken：
@@ -85,6 +110,12 @@ https://account-devops.aliyun.com/settings/personalAccessToken
 权限至少需要：
 - 组织管理：所有权限点只读
 - 流水线：所有权限点只读
+
+如果你希望后续自动复用 token，可以先运行：
+bash scripts/setup.sh
+
+它会把 token 保存到：
+$(global_config_file)
 EOF
   exit 1
 }

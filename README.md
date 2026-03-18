@@ -19,6 +19,7 @@
 SKILL.md
 scripts/
   common.sh
+  setup.sh
   dev_deploy.sh
   wait_pipeline_run.sh
 examples/
@@ -81,6 +82,32 @@ mkdir -p "$HOME/.claude/skills"
 cp -R yunxiao-dev-deploy "$HOME/.claude/skills/yunxiao-dev-deploy"
 ```
 
+## Token 配置
+
+推荐先运行一次：
+
+```bash
+bash scripts/setup.sh
+```
+
+这个脚本会：
+
+- 把 `YUNXIAO_ACCESS_TOKEN` 保存到 `~/.yunxiao/config.sh`
+- 可选追加 `source ~/.yunxiao/config.sh` 到 `~/.zshrc` 或 `~/.bashrc`
+- 顺手验证 token 是否能访问组织列表接口
+
+如果你不想跑向导，也可以手动配置：
+
+```bash
+mkdir -p ~/.yunxiao
+cat > ~/.yunxiao/config.sh <<'EOF'
+export YUNXIAO_ACCESS_TOKEN="your_yunxiao_token"
+EOF
+chmod 600 ~/.yunxiao/config.sh
+```
+
+`YUNXIAO_ACCESS_TOKEN` 不要写进仓库。
+
 ## 项目内配置
 
 在你的项目根目录创建 `.yunxiao/project.env`：
@@ -91,7 +118,7 @@ YUNXIAO_ORGANIZATION_ID="your_organization_id"
 YUNXIAO_DEV_PIPELINE_ID="your_dev_pipeline_id"
 ```
 
-`YUNXIAO_ACCESS_TOKEN` 不要写进仓库，走环境变量。
+这里只保存项目级的非敏感配置，不保存 token。
 
 ## Token 权限
 
@@ -105,6 +132,12 @@ YUNXIAO_DEV_PIPELINE_ID="your_dev_pipeline_id"
 - `流水线`：所有权限点只读
 
 ## 用法
+
+首次配置全局 token：
+
+```bash
+bash scripts/setup.sh
+```
 
 查看最近一次成功部署：
 
