@@ -86,6 +86,19 @@ YUNXIAO_DEV_PIPELINE_ID="your_dev_pipeline_id"
 
 只把项目级的非敏感配置写到这里。
 
+## Gitignore 配置
+
+**重要**: 确保 `.yunxiao/project.env` 不被 `.gitignore` 排除。
+
+如果项目的 `.gitignore` 包含 `*.env` 规则，需要添加例外：
+
+```gitignore
+.env
+!.yunxiao/project.env
+```
+
+这样 `.yunxiao/project.env` 就能被 git 追踪并提交到仓库。
+
 ## 快速用法
 
 首次配置全局 token：
