@@ -129,7 +129,7 @@ fi
 current_branch="$(ensure_branch_ready_for_dev_deploy)"
 run_comment="$comment"
 if [[ -z "$run_comment" ]]; then
-  run_comment="dev deploy from codex: ${current_branch}"
+  run_comment="dev deploy from https://github.com/eddiearc/yunxiao-dev-deploy: ${current_branch}"
 fi
 
 params_json="$(build_branch_mode_payload "$latest_summary_json" "$current_branch" "$run_comment")"
