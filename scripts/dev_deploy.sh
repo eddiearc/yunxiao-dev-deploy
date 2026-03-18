@@ -149,7 +149,8 @@ if [[ "$dry_run" == "true" ]]; then
 fi
 
 run_response="$(trigger_pipeline_run "$organization_id" "$pipeline_id" "$params_json")"
-run_id="$(printf '%s' "$run_response" | jq -r '.pipelineRunId // .id // .runId // empty')"
+# 处理两种响应格式：直接返回数字 (如 1125) 或返回对象 ({pipelineRunId: 1125})
+run_id="$(printf '%s' "$run_response" | jq -r 'if type == "number" then . elif type == "object" then (.pipelineRunId // .id // .runId // empty) else empty end')"
 
 printf 'triggered_pipeline_run_id=%s\n' "${run_id:-unknown}"
 printf 'trigger_response=%s\n' "$run_response"
