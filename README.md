@@ -10,7 +10,8 @@
 - 从项目本地配置读取 dev 流水线
 - 拒绝名称带 `prod` 的流水线
 - 读取最近一次成功部署里已经集成的分支
-- 把当前分支加入 `branchModeBranchs` 后再触发
+- 默认把当前分支加入 `branchModeBranchs` 后再触发，不允许静默删掉已有分支
+- 如果确实要覆盖分支集，必须显式传 `--replace-branches`；如果发生 shrink，还要再加 `--allow-shrink`
 - 识别阻塞态，例如冲突解决，直接提醒用户去云效页面处理
 
 ## 目录结构
@@ -170,6 +171,14 @@ bash scripts/dev_deploy.sh run --dry-run
 bash scripts/dev_deploy.sh run
 ```
 
+显式覆盖分支集：
+
+```bash
+bash scripts/dev_deploy.sh run \
+  --replace-branches "feature-a,feature-b" \
+  --allow-shrink
+```
+
 首次通过链接注入流水线 ID：
 
 ```bash
@@ -182,6 +191,25 @@ bash scripts/dev_deploy.sh run \
 ```bash
 bash scripts/wait_pipeline_run.sh 1234
 ```
+
+## 分支模式保护
+
+默认 `run` 的语义是：
+
+- 读取最近一次成功部署里的分支集
+- 把当前分支追加进去
+- 去重后再触发
+
+这意味着脚本默认不会把别人已经在 dev 上的分支静默踢掉。
+
+如果你传了 `--replace-branches`，脚本会把它视为“我明确要覆盖分支集”。  
+但只要这个新分支集会删掉上一次成功部署里的任意分支，仍然会直接失败，除非你额外显式传：
+
+```bash
+--allow-shrink
+```
+
+这样误操作至少需要两个明确动作，不能再被默认参数悄悄覆盖。
 
 ## 依赖
 

@@ -463,6 +463,69 @@ build_branch_mode_payload() {
     '
 }
 
+parse_branch_list_csv() {
+  local csv="$1"
+
+  jq -cn \
+    --arg csv "$csv" '
+      ($csv | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0))) as $items
+      | reduce $items[] as $item
+          ([]; if index($item) then . else . + [$item] end)
+    '
+}
+
+build_exact_branch_mode_payload() {
+  local branches_json="$1"
+  local comment="${2:-}"
+
+  jq -cn \
+    --argjson branches "$branches_json" \
+    --arg comment "$comment" '
+      {
+        branchModeBranchs: $branches
+      }
+      | if $comment == "" then . else . + {comment: $comment} end
+    '
+}
+
+extract_triggered_run_id() {
+  local response_json="$1"
+
+  printf '%s' "$response_json" | jq -r '
+    if type == "number" then
+      tostring
+    elif type == "string" then
+      .
+    elif type == "object" then
+      (.pipelineRunId // .id // .runId // .data.pipelineRunId // .data.id // .data.runId // empty) | tostring
+    else
+      empty
+    end
+  '
+}
+
+ensure_branch_set_not_shrunk() {
+  local latest_summary_json="$1"
+  local params_json="$2"
+  local allow_shrink="${3:-false}"
+  local removed
+
+  removed="$(
+    jq -rn \
+      --argjson latest "$latest_summary_json" \
+      --argjson params "$params_json" '
+        ($latest.branches // []) as $existing
+        | ($params.branchModeBranchs // []) as $target
+        | [ $existing[] as $item | select(($target | index($item)) == null) | $item ]
+        | join(",")
+      '
+  )"
+
+  if [[ -n "$removed" && "$allow_shrink" != "true" ]]; then
+    die "检测到本次部署会移除已部署分支: ${removed}。默认禁止静默 shrink。请改用追加模式，或显式传 --replace-branches 并加 --allow-shrink。"
+  fi
+}
+
 trigger_pipeline_run() {
   local organization_id="$1"
   local pipeline_id="$2"

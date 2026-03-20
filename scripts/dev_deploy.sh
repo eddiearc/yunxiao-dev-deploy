@@ -10,11 +10,13 @@ usage() {
 Usage:
   dev_deploy.sh latest [--pipeline-link URL]
   dev_deploy.sh run [--pipeline-link URL] [--comment TEXT] [--dry-run] [--wait]
+                    [--replace-branches branch-a,branch-b] [--allow-shrink]
 
 Examples:
   dev_deploy.sh latest
   dev_deploy.sh run
   dev_deploy.sh run --dry-run
+  dev_deploy.sh run --replace-branches "feature-a,feature-b" --allow-shrink
   dev_deploy.sh run --pipeline-link "https://flow.aliyun.com/pipelines/123456/current"
   dev_deploy.sh run --comment "dev deploy from codex"
 EOF
@@ -25,6 +27,8 @@ pipeline_link=""
 comment=""
 dry_run="false"
 wait_after_run="false"
+replace_branches_csv=""
+allow_shrink="false"
 
 if [[ $# -gt 0 ]]; then
   case "$1" in
@@ -55,6 +59,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --wait)
       wait_after_run="true"
+      shift
+      ;;
+    --replace-branches)
+      replace_branches_csv="${2:-}"
+      shift 2
+      ;;
+    --allow-shrink)
+      allow_shrink="true"
       shift
       ;;
     -h|--help)
@@ -142,7 +154,14 @@ if [[ -z "$run_comment" ]]; then
   run_comment="dev deploy from https://github.com/eddiearc/yunxiao-dev-deploy: ${current_branch}"
 fi
 
-params_json="$(build_branch_mode_payload "$latest_summary_json" "$current_branch" "$run_comment")"
+if [[ -n "$replace_branches_csv" ]]; then
+  replacement_branches_json="$(parse_branch_list_csv "$replace_branches_csv")"
+  params_json="$(build_exact_branch_mode_payload "$replacement_branches_json" "$run_comment")"
+else
+  params_json="$(build_branch_mode_payload "$latest_summary_json" "$current_branch" "$run_comment")"
+fi
+
+ensure_branch_set_not_shrunk "$latest_summary_json" "$params_json" "$allow_shrink"
 merged_branches="$(printf '%s' "$params_json" | jq -r '.branchModeBranchs | join(", ")')"
 
 printf 'pipeline=%s\n' "$pipeline_name"
@@ -151,6 +170,8 @@ printf 'current_branch=%s\n' "$current_branch"
 printf 'latest_success_run_id=%s\n' "${latest_run_id:-none}"
 printf 'latest_release_branch=%s\n' "${latest_release_branch:-none}"
 printf 'latest_integrated_branches=%s\n' "${latest_branches:-none}"
+printf 'replace_mode=%s\n' "$( [[ -n "$replace_branches_csv" ]] && printf 'true' || printf 'false' )"
+printf 'allow_shrink=%s\n' "$allow_shrink"
 printf 'next_integrated_branches=%s\n' "$merged_branches"
 printf 'params=%s\n' "$params_json"
 
@@ -159,8 +180,7 @@ if [[ "$dry_run" == "true" ]]; then
 fi
 
 run_response="$(trigger_pipeline_run "$organization_id" "$pipeline_id" "$params_json")"
-# 处理两种响应格式：直接返回数字 (如 1125) 或返回对象 ({pipelineRunId: 1125})
-run_id="$(printf '%s' "$run_response" | jq -r 'if type == "number" then . elif type == "object" then (.pipelineRunId // .id // .runId // empty) else empty end')"
+run_id="$(extract_triggered_run_id "$run_response")"
 
 printf 'triggered_pipeline_run_id=%s\n' "${run_id:-unknown}"
 printf 'trigger_response=%s\n' "$run_response"
