@@ -90,6 +90,9 @@ pipeline_name="$(printf '%s' "$API_BODY" | jq -r '.name // ""')"
 block_if_prod_pipeline "$pipeline_name"
 
 latest_summary_json="$(fetch_latest_successful_run_summary "$organization_id" "$pipeline_id")"
+latest_prune_json="$(prune_deleted_remote_branches "$(printf '%s' "$latest_summary_json" | jq -c '.branches // []')")"
+latest_deleted_branches="$(printf '%s' "$latest_prune_json" | jq -r '(.removed // []) | join(", ")')"
+latest_summary_json="$(sanitize_latest_summary_branches "$latest_summary_json" "$latest_prune_json")"
 latest_run_id="$(printf '%s' "$latest_summary_json" | jq -r '.pipelineRunId // empty')"
 latest_release_branch="$(printf '%s' "$latest_summary_json" | jq -r '.releaseBranch // ""')"
 latest_branches="$(printf '%s' "$latest_summary_json" | jq -r '(.branches // []) | join(", ")')"
@@ -101,6 +104,9 @@ if [[ "$command" == "latest" ]]; then
   printf 'latest_success_run_id=%s\n' "${latest_run_id:-none}"
   printf 'latest_release_branch=%s\n' "${latest_release_branch:-none}"
   printf 'latest_integrated_branches=%s\n' "${latest_branches:-none}"
+  if [[ -n "$latest_deleted_branches" ]]; then
+    printf 'deleted_integrated_branches=%s\n' "$latest_deleted_branches"
+  fi
 
   # Get current branch for deployment status check
   current_branch_for_check="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
@@ -172,6 +178,9 @@ printf 'current_branch=%s\n' "$current_branch"
 printf 'latest_success_run_id=%s\n' "${latest_run_id:-none}"
 printf 'latest_release_branch=%s\n' "${latest_release_branch:-none}"
 printf 'latest_integrated_branches=%s\n' "${latest_branches:-none}"
+if [[ -n "$latest_deleted_branches" ]]; then
+  printf 'deleted_integrated_branches=%s\n' "$latest_deleted_branches"
+fi
 printf 'replace_mode=%s\n' "$( [[ -n "$replace_branches_csv" ]] && printf 'true' || printf 'false' )"
 printf 'allow_shrink=%s\n' "$allow_shrink"
 printf 'next_integrated_branches=%s\n' "$merged_branches"

@@ -28,6 +28,34 @@ test_default_payload_appends_without_dropping() {
   assert_eq '["feature-a","feature-b","feature-c"]' "$branches" "default payload should append current branch"
 }
 
+test_deleted_remote_branches_are_pruned_before_building_payload() {
+  local original_remote_branch_exists
+  local prune_json
+  local sanitized_latest_summary_json
+  local payload_json
+  local kept
+  local removed
+  local branches
+
+  original_remote_branch_exists="$(declare -f remote_branch_exists)"
+  remote_branch_exists() {
+    [[ "$1" != "feature-deleted" ]]
+  }
+
+  prune_json="$(prune_deleted_remote_branches '["feature-a","feature-deleted","feature-b"]')"
+  kept="$(printf '%s' "$prune_json" | jq -c '.kept')"
+  removed="$(printf '%s' "$prune_json" | jq -c '.removed')"
+  assert_eq '["feature-a","feature-b"]' "$kept" "existing branches should be kept"
+  assert_eq '["feature-deleted"]' "$removed" "deleted branches should be removed"
+
+  sanitized_latest_summary_json="$(sanitize_latest_summary_branches '{"branches":["feature-a","feature-deleted","feature-b"]}' "$prune_json")"
+  payload_json="$(build_branch_mode_payload "$sanitized_latest_summary_json" "feature-c" "test-comment")"
+  branches="$(printf '%s' "$payload_json" | jq -c '.branchModeBranchs')"
+  assert_eq '["feature-a","feature-b","feature-c"]' "$branches" "deleted branches should not be carried into the next deploy payload"
+
+  eval "$original_remote_branch_exists"
+}
+
 test_shrink_requires_explicit_override() {
   local latest_summary_json
   local payload_json
@@ -67,6 +95,7 @@ test_extract_triggered_run_id_supports_multiple_shapes() {
 
 main() {
   test_default_payload_appends_without_dropping
+  test_deleted_remote_branches_are_pruned_before_building_payload
   test_shrink_requires_explicit_override
   test_parse_branch_list_csv_dedupes_and_trims
   test_extract_triggered_run_id_supports_multiple_shapes

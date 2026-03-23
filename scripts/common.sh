@@ -463,6 +463,53 @@ build_branch_mode_payload() {
     '
 }
 
+remote_branch_exists() {
+  local branch="$1"
+
+  if [[ -z "$branch" ]]; then
+    return 1
+  fi
+
+  git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1
+}
+
+prune_deleted_remote_branches() {
+  local branches_json="$1"
+  local branch
+  local kept=()
+  local removed=()
+
+  while IFS= read -r branch; do
+    [[ -z "$branch" ]] && continue
+    if remote_branch_exists "$branch"; then
+      kept+=("$branch")
+    else
+      removed+=("$branch")
+    fi
+  done < <(printf '%s' "$branches_json" | jq -r '.[]?')
+
+  jq -cn \
+    --argjson kept "$(printf '%s\n' "${kept[@]-}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
+    --argjson removed "$(printf '%s\n' "${removed[@]-}" | jq -Rsc 'split("\n") | map(select(length > 0))')" '
+      {
+        kept: $kept,
+        removed: $removed
+      }
+    '
+}
+
+sanitize_latest_summary_branches() {
+  local latest_summary_json="$1"
+  local prune_result_json="$2"
+
+  jq -cn \
+    --argjson latest "$latest_summary_json" \
+    --argjson prune "$prune_result_json" '
+      $latest
+      | .branches = ($prune.kept // [])
+    '
+}
+
 parse_branch_list_csv() {
   local csv="$1"
 
