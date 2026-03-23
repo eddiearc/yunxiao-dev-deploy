@@ -130,7 +130,9 @@ if [[ "$command" == "latest" ]]; then
     if [[ "$blocking_count" -gt 0 ]]; then
       printf 'running_run_blocked=true\n'
       printf 'running_run_blocking_summary=%s\n' "$(format_blocking_summary "$blocking_json" | paste -sd ';' -)"
-      printf 'running_run_action=请到云效页面处理阻塞后再继续: https://flow.aliyun.com/pipelines/%s/current\n' "$pipeline_id"
+      printf 'running_run_resolution_options=original_branch\n'
+      printf 'running_run_cancel_command=bash %s/cancel_pipeline_run.sh %s --reason %q\n' "$SCRIPT_DIR" "$running_run_id" "cancel blocked run before conflict resolution"
+      printf 'running_run_action=若 blocking_summary 为 CONFLICT_MERGE，默认只支持 original_branch：先取消 run，再在原分支解决冲突并重跑。若判断必须改 releaseBranch，请退出并报告用户: https://flow.aliyun.com/pipelines/%s/current\n' "$pipeline_id"
     else
       printf 'running_run_blocked=false\n'
     fi
@@ -192,7 +194,9 @@ if [[ -n "$run_id" ]]; then
   if [[ "$blocking_count" -gt 0 ]]; then
     printf 'triggered_run_blocked=true\n'
     printf 'triggered_run_blocking_summary=%s\n' "$(format_blocking_summary "$blocking_json" | paste -sd ';' -)"
-    printf 'triggered_run_action=请到云效页面处理阻塞后再继续: https://flow.aliyun.com/pipelines/%s/current\n' "$pipeline_id"
+    printf 'triggered_run_resolution_options=original_branch\n'
+    printf 'triggered_run_cancel_command=bash %s/cancel_pipeline_run.sh %s --reason %q\n' "$SCRIPT_DIR" "$run_id" "cancel blocked run before conflict resolution"
+    printf 'triggered_run_action=如果 blocking_summary 显示 CONFLICT_MERGE，默认只支持 original_branch：先取消当前阻塞 run，再在原分支修冲突并重跑。若必须改 releaseBranch，请退出并报告用户: https://flow.aliyun.com/pipelines/%s/current\n' "$pipeline_id"
   fi
 fi
 

@@ -544,6 +544,21 @@ trigger_pipeline_run() {
   printf '%s\n' "$API_BODY"
 }
 
+terminate_pipeline_run() {
+  local organization_id="$1"
+  local pipeline_id="$2"
+  local run_id="$3"
+
+  if ! api_request PUT "/oapi/v1/flow/organizations/${organization_id}/pipelines/${pipeline_id}/runs/${run_id}"; then
+    if [[ "$API_STATUS" == "403" ]]; then
+      die_permission_denied "终止流水线运行实例" "pipeline-run-write"
+    fi
+    die "终止流水线运行实例失败。HTTP ${API_STATUS}: ${API_BODY}"
+  fi
+
+  printf '%s\n' "$API_BODY"
+}
+
 # Get the timestamp of the last commit on the current branch
 get_last_commit_timestamp() {
   # Returns Unix timestamp (seconds since epoch)
