@@ -33,7 +33,8 @@ while true; do
     if [[ "$blocking_count" -gt 0 ]]; then
       printf 'blocked=true\n'
       printf 'blocking_summary=%s\n' "$(format_blocking_summary "$blocking_json" | paste -sd ';' -)"
-      printf 'action=请到云效页面处理阻塞后再继续: https://flow.aliyun.com/pipelines/%s/current\n' "$pipeline_id"
+      printf 'resolution_options=release_branch,original_branch_requires_confirmation\n'
+      printf 'action=如果是 CONFLICT_MERGE，默认优先在 releaseBranch 解决并重跑；若需要改 original_branch/featureBranch，必须先得到用户明确答复。云效页面: https://flow.aliyun.com/pipelines/%s/current\n' "$pipeline_id"
       exit 2
     fi
   fi
