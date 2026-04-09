@@ -104,6 +104,15 @@ curl -H "x-devops-gp-token: $YUNXIAO_ACCESS_TOKEN" ...
 
 同理，调用 `common.sh` 里的函数（如 `fetch_pipeline_run_detail`、`api_request`）也必须在同一个 bash -c 上下文里先 source。
 
+## API 认证 Header（极其重要）
+
+**云效 API 的认证 header 是 `x-yunxiao-token`，不是 `x-devops-gp-token`。**
+
+- ✅ 正确：`-H "x-yunxiao-token: ${YUNXIAO_ACCESS_TOKEN}"`
+- ❌ 错误：`-H "x-devops-gp-token: ${YUNXIAO_ACCESS_TOKEN}"`（会返回 `InvalidToken`）
+
+手动拼 curl 时必须使用 `x-yunxiao-token`，或者直接调用 `common.sh` 里的 `api_request` 函数（它已经用了正确的 header）。**不要凭记忆猜 header 名，以 `common.sh` 的实现为准。**
+
 ## Token 要求
 
 如果没有 `YUNXIAO_ACCESS_TOKEN`，提醒用户去这里生成：

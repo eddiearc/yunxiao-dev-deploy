@@ -12,7 +12,7 @@
 - 读取最近一次成功部署里已经集成的分支
 - 默认把当前分支加入 `branchModeBranchs` 后再触发，不允许静默删掉已有分支
 - 如果确实要覆盖分支集，必须显式传 `--replace-branches`；如果发生 shrink，还要再加 `--allow-shrink`
-- 识别阻塞态；如果是 `CONFLICT_MERGE`，默认优先在 `releaseBranch` 解决，修改业务分支前必须得到用户明确答复
+- 识别阻塞态；如果是 `CONFLICT_MERGE`，默认优先在 `releaseBranch` 解决，且优先使用独立 git worktree 处理，修改业务分支前必须得到用户明确答复
 
 ## 目录结构
 
@@ -210,6 +210,24 @@ bash scripts/wait_pipeline_run.sh 1234
 ```
 
 这样误操作至少需要两个明确动作，不能再被默认参数悄悄覆盖。
+
+## 冲突处理工作区约定
+
+当云效 `run` 因 `CONFLICT_MERGE` 阻塞时，默认不要直接在当前本地开发分支所在工作目录里处理冲突。
+
+推荐做法：
+
+- 保留当前开发分支工作区不动
+- 为当前 `pipelineRunId` 新建独立 git worktree
+- 在该 worktree 内检出 `releaseBranch`
+- 只在该 worktree 内完成 `fetch / merge / resolve / commit / push`
+- 续跑当前 run 后，删除临时 worktree
+
+这样可以避免：
+
+- 污染当前开发分支的工作区
+- 把 release 分支冲突修复误提交到本地业务分支
+- 多轮 `CONFLICT_MERGE` 时把本地现场越搞越乱
 
 ## 依赖
 
