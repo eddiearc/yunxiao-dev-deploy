@@ -40,7 +40,7 @@ while true; do
   fi
 
   case "$status" in
-    SUCCESS|FAILED|CANCELED|ABORTED|TERMINATED)
+    SUCCESS|FAIL|FAILED|CANCELED|ABORTED|TERMINATED)
       exit 0
       ;;
   esac
