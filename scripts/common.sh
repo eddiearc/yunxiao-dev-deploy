@@ -303,7 +303,9 @@ fetch_pipeline_detail() {
 
 block_if_prod_pipeline() {
   local pipeline_name="$1"
-  if [[ "${pipeline_name,,}" == *prod* ]]; then
+  local pipeline_name_lower
+  pipeline_name_lower="$(printf '%s' "$pipeline_name" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$pipeline_name_lower" == *prod* ]]; then
     die "检测到流水线名称包含 prod：${pipeline_name}。为避免风险，已严格阻止执行。"
   fi
 }
@@ -535,6 +537,83 @@ build_exact_branch_mode_payload() {
     '
 }
 
+detect_pipeline_trigger_mode() {
+  local pipeline_detail_json="$1"
+
+  printf '%s' "$pipeline_detail_json" | jq -r '
+    if any(.pipelineConfig.sources[]?; .data.isBranchMode == true) then
+      "branch_mode"
+    elif ([.pipelineConfig.sources[]? | select((.data.repo // "") != "")] | length) > 0 then
+      "running_branch"
+    else
+      "unknown"
+    end
+  '
+}
+
+primary_pipeline_source_repo() {
+  local pipeline_detail_json="$1"
+
+  printf '%s' "$pipeline_detail_json" | jq -r '
+    [.pipelineConfig.sources[]? | select((.data.repo // "") != "") | .data.repo][0] // ""
+  '
+}
+
+build_running_branch_payload() {
+  local repo_url="$1"
+  local branch="$2"
+  local comment="${3:-}"
+
+  jq -cn \
+    --arg repo "$repo_url" \
+    --arg branch "$branch" \
+    --arg comment "$comment" '
+      {
+        runningBranchs: {
+          ($repo): $branch
+        }
+      }
+      | if $comment == "" then . else . + {comment: $comment} end
+    '
+}
+
+validate_run_source_branch() {
+  local run_detail_json="$1"
+  local expected_branch="$2"
+
+  if ! printf '%s' "$run_detail_json" | jq -e --arg branch "$expected_branch" '
+    any(.sources[]?; (.data.branch // "") == $branch)
+  ' >/dev/null; then
+    printf '%s' "$run_detail_json" | jq -c '
+      {
+        status,
+        sources: [.sources[]? | {
+          sign,
+          type,
+          repo: .data.repo,
+          branch: .data.branch,
+          commit: .data.commit
+        }]
+      }
+    ' >&2
+    die "流水线触发参数未生效：run detail 中没有目标分支 ${expected_branch}。请检查流水线 source 模式和 params。"
+  fi
+}
+
+format_run_sources_summary() {
+  local run_detail_json="$1"
+
+  printf '%s' "$run_detail_json" | jq -r '
+    [.sources[]? | [
+      (.sign // ""),
+      (.type // ""),
+      (.data.repo // ""),
+      (.data.branch // ""),
+      ((.data.commit // "") | tostring)
+    ] | @tsv] | .[]
+  '
+}
+
 extract_triggered_run_id() {
   local response_json="$1"
 
@@ -618,7 +697,7 @@ check_if_latest_commit_deployed() {
   local latest_summary_json="$1"
   local current_branch="$2"
 
-  local deploy_create_time commit_timestamp deploy_timestamp
+  local deploy_create_time commit_timestamp deploy_timestamp branch_count release_branch
 
   # Get deployment create time (can be milliseconds timestamp or ISO 8601)
   deploy_create_time="$(printf '%s' "$latest_summary_json" | jq -r '.createTime // empty')"
@@ -627,9 +706,18 @@ check_if_latest_commit_deployed() {
     return 1
   fi
 
-  # Check if current branch is in the deployed branches
-  if ! printf '%s' "$latest_summary_json" | jq -e --arg branch "$current_branch" '(.branches // []) | index($branch)' >/dev/null 2>&1; then
-    return 1
+  branch_count="$(printf '%s' "$latest_summary_json" | jq '(.branches // []) | length')"
+  if [[ "$branch_count" -gt 0 ]]; then
+    # Branch-mode pipelines expose integrated feature branches.
+    if ! printf '%s' "$latest_summary_json" | jq -e --arg branch "$current_branch" '(.branches // []) | index($branch)' >/dev/null 2>&1; then
+      return 1
+    fi
+  else
+    # Regular source pipelines expose the actual source branch as releaseBranch.
+    release_branch="$(printf '%s' "$latest_summary_json" | jq -r '.releaseBranch // ""')"
+    if [[ "$release_branch" != "$current_branch" ]]; then
+      return 1
+    fi
   fi
 
   # Get last commit timestamp on current branch

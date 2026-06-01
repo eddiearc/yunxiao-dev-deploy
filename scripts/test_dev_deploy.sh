@@ -93,12 +93,53 @@ test_extract_triggered_run_id_supports_multiple_shapes() {
   assert_eq '1034' "$(extract_triggered_run_id '{"data":{"runId":1034}}')" "nested object runId should be supported"
 }
 
+test_detect_pipeline_trigger_mode() {
+  local branch_mode_detail
+  local running_branch_detail
+
+  branch_mode_detail='{"pipelineConfig":{"sources":[{"data":{"repo":"https://github.com/acme/api.git","isBranchMode":true}}]}}'
+  running_branch_detail='{"pipelineConfig":{"sources":[{"data":{"repo":"https://github.com/acme/api.git","isBranchMode":null}}]}}'
+
+  assert_eq 'branch_mode' "$(detect_pipeline_trigger_mode "$branch_mode_detail")" "branch mode source should be detected"
+  assert_eq 'running_branch' "$(detect_pipeline_trigger_mode "$running_branch_detail")" "regular source should use runningBranchs"
+  assert_eq 'unknown' "$(detect_pipeline_trigger_mode '{"pipelineConfig":{"sources":[]}}')" "missing source should be unknown"
+}
+
+test_running_branch_payload_uses_repo_url_key() {
+  local payload_json
+
+  payload_json="$(build_running_branch_payload "https://github.com/acme/api.git" "feature-a" "test-comment")"
+  assert_eq 'feature-a' "$(printf '%s' "$payload_json" | jq -r '.runningBranchs["https://github.com/acme/api.git"]')" "runningBranchs should map repo URL to branch"
+  assert_eq 'test-comment' "$(printf '%s' "$payload_json" | jq -r '.comment')" "runningBranch payload should include comment"
+}
+
+test_validate_run_source_branch_fails_when_ignored() {
+  local run_detail_json
+
+  run_detail_json='{"status":"RUNNING","sources":[{"sign":"api","type":"githubOAuth","data":{"repo":"https://github.com/acme/api.git","branch":"main"}}]}'
+  if (
+    validate_run_source_branch "$run_detail_json" "feature-a"
+  ) >/tmp/test_dev_deploy.out 2>/tmp/test_dev_deploy.err; then
+    echo "expected source branch validation to fail when branch is ignored" >&2
+    exit 1
+  fi
+  if ! grep -q "流水线触发参数未生效" /tmp/test_dev_deploy.err; then
+    echo "expected source branch validation error message" >&2
+    cat /tmp/test_dev_deploy.err >&2
+    exit 1
+  fi
+  validate_run_source_branch '{"sources":[{"data":{"branch":"feature-a"}}]}' "feature-a"
+}
+
 main() {
   test_default_payload_appends_without_dropping
   test_deleted_remote_branches_are_pruned_before_building_payload
   test_shrink_requires_explicit_override
   test_parse_branch_list_csv_dedupes_and_trims
   test_extract_triggered_run_id_supports_multiple_shapes
+  test_detect_pipeline_trigger_mode
+  test_running_branch_payload_uses_repo_url_key
+  test_validate_run_source_branch_fails_when_ignored
   rm -f /tmp/test_dev_deploy.out /tmp/test_dev_deploy.err
   echo "OK"
 }

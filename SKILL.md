@@ -228,6 +228,13 @@ bash scripts/wait_pipeline_run.sh 1234
 
 ## 运行参数策略
 
+脚本会先读取 pipeline config，自动识别 source 模式：
+
+- `trigger_mode=branch_mode`：代码源 `data.isBranchMode=true`，使用 `branchModeBranchs`。
+- `trigger_mode=running_branch`：普通代码源流水线，使用云效 OpenAPI `runningBranchs`，key 为代码源 repo URL，value 为目标分支。
+
+触发后必须读取 run detail 校验 `sources[].data.branch` 确实等于当前分支；如果传参被忽略，脚本会直接失败，不再假定部署成功。
+
 当前仓库的 dev 流水线是“分支模式”时，不是直接部署单一业务分支。
 
 触发时使用 `branchModeBranchs`：
@@ -244,6 +251,14 @@ bash scripts/wait_pipeline_run.sh 1234
 ```json
 {
   "params": "{\"branchModeBranchs\":[\"feature/weather\",\"codex/foo\"],\"comment\":\"dev deploy from codex: codex/foo\"}"
+}
+```
+
+普通代码源流水线示意：
+
+```json
+{
+  "params": "{\"runningBranchs\":{\"https://github.com/Nature-Select/elys-loom-api.git\":\"feat/elys-trigger-recall-context\"},\"comment\":\"dev deploy from codex\"}"
 }
 ```
 

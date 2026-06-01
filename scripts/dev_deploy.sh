@@ -85,9 +85,12 @@ ensure_yunxiao_token
 organization_id="$(resolve_organization_id)"
 pipeline_id="$(resolve_pipeline_id "$pipeline_link")"
 fetch_pipeline_detail "$organization_id" "$pipeline_id"
+pipeline_detail_json="$API_BODY"
 
 pipeline_name="$(printf '%s' "$API_BODY" | jq -r '.name // ""')"
 block_if_prod_pipeline "$pipeline_name"
+trigger_mode="$(detect_pipeline_trigger_mode "$pipeline_detail_json")"
+primary_source_repo="$(primary_pipeline_source_repo "$pipeline_detail_json")"
 
 latest_summary_json="$(fetch_latest_successful_run_summary "$organization_id" "$pipeline_id")"
 latest_prune_json="$(prune_deleted_remote_branches "$(printf '%s' "$latest_summary_json" | jq -c '.branches // []')")"
@@ -101,6 +104,10 @@ running_run_id="$(fetch_latest_running_run_id "$organization_id" "$pipeline_id")
 if [[ "$command" == "latest" ]]; then
   printf 'pipeline=%s\n' "$pipeline_name"
   printf 'pipeline_id=%s\n' "$pipeline_id"
+  printf 'trigger_mode=%s\n' "$trigger_mode"
+  if [[ -n "$primary_source_repo" ]]; then
+    printf 'primary_source_repo=%s\n' "$primary_source_repo"
+  fi
   printf 'latest_success_run_id=%s\n' "${latest_run_id:-none}"
   printf 'latest_release_branch=%s\n' "${latest_release_branch:-none}"
   printf 'latest_integrated_branches=%s\n' "${latest_branches:-none}"
@@ -162,18 +169,39 @@ if [[ -z "$run_comment" ]]; then
   run_comment="dev deploy from https://github.com/eddiearc/yunxiao-dev-deploy: ${current_branch}"
 fi
 
-if [[ -n "$replace_branches_csv" ]]; then
-  replacement_branches_json="$(parse_branch_list_csv "$replace_branches_csv")"
-  params_json="$(build_exact_branch_mode_payload "$replacement_branches_json" "$run_comment")"
-else
-  params_json="$(build_branch_mode_payload "$latest_summary_json" "$current_branch" "$run_comment")"
-fi
+case "$trigger_mode" in
+  branch_mode)
+    if [[ -n "$replace_branches_csv" ]]; then
+      replacement_branches_json="$(parse_branch_list_csv "$replace_branches_csv")"
+      params_json="$(build_exact_branch_mode_payload "$replacement_branches_json" "$run_comment")"
+    else
+      params_json="$(build_branch_mode_payload "$latest_summary_json" "$current_branch" "$run_comment")"
+    fi
 
-ensure_branch_set_not_shrunk "$latest_summary_json" "$params_json" "$allow_shrink"
-merged_branches="$(printf '%s' "$params_json" | jq -r '.branchModeBranchs | join(", ")')"
+    ensure_branch_set_not_shrunk "$latest_summary_json" "$params_json" "$allow_shrink"
+    merged_branches="$(printf '%s' "$params_json" | jq -r '.branchModeBranchs | join(", ")')"
+    ;;
+  running_branch)
+    if [[ -n "$replace_branches_csv" ]]; then
+      die "当前流水线不是分支模式，不能使用 --replace-branches。普通代码源会用 runningBranchs 指定当前分支。"
+    fi
+    if [[ -z "$primary_source_repo" ]]; then
+      die "无法从流水线配置中找到代码源 repo URL，不能构造 runningBranchs。"
+    fi
+    params_json="$(build_running_branch_payload "$primary_source_repo" "$current_branch" "$run_comment")"
+    merged_branches="$current_branch"
+    ;;
+  *)
+    die "无法识别流水线 source 模式，不能安全触发部署。"
+    ;;
+esac
 
 printf 'pipeline=%s\n' "$pipeline_name"
 printf 'pipeline_id=%s\n' "$pipeline_id"
+printf 'trigger_mode=%s\n' "$trigger_mode"
+if [[ -n "$primary_source_repo" ]]; then
+  printf 'primary_source_repo=%s\n' "$primary_source_repo"
+fi
 printf 'current_branch=%s\n' "$current_branch"
 printf 'latest_success_run_id=%s\n' "${latest_run_id:-none}"
 printf 'latest_release_branch=%s\n' "${latest_release_branch:-none}"
@@ -198,6 +226,9 @@ printf 'trigger_response=%s\n' "$run_response"
 
 if [[ -n "$run_id" ]]; then
   run_detail="$(fetch_pipeline_run_detail "$organization_id" "$pipeline_id" "$run_id")"
+  validate_run_source_branch "$run_detail" "$current_branch"
+  printf 'triggered_run_sources=\n'
+  format_run_sources_summary "$run_detail"
   blocking_json="$(extract_blocking_actions "$run_detail")"
   blocking_count="$(printf '%s' "$blocking_json" | jq 'length')"
   if [[ "$blocking_count" -gt 0 ]]; then

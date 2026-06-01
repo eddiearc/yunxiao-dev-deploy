@@ -9,9 +9,10 @@
 - 自动发现或校验 `organizationId`
 - 从项目本地配置读取 dev 流水线
 - 拒绝名称带 `prod` 的流水线
-- 读取最近一次成功部署里已经集成的分支
-- 默认把当前分支加入 `branchModeBranchs` 后再触发，不允许静默删掉已有分支
-- 如果确实要覆盖分支集，必须显式传 `--replace-branches`；如果发生 shrink，还要再加 `--allow-shrink`
+- 自动识别流水线 source 模式：分支模式用 `branchModeBranchs`，普通代码源用 `runningBranchs`
+- 分支模式下读取最近一次成功部署里已经集成的分支，默认追加当前分支且不允许静默删掉已有分支
+- 普通代码源流水线下用 repo URL -> 当前分支构造 `runningBranchs`，触发后校验 run detail 的实际 source branch
+- 如果确实要覆盖分支集，必须在分支模式下显式传 `--replace-branches`；如果发生 shrink，还要再加 `--allow-shrink`
 - 识别阻塞态；如果是 `CONFLICT_MERGE`，默认优先在 `releaseBranch` 解决，且优先使用独立 git worktree 处理，修改业务分支前必须得到用户明确答复
 
 ## 目录结构
