@@ -131,6 +131,27 @@ test_validate_run_source_branch_fails_when_ignored() {
   validate_run_source_branch '{"sources":[{"data":{"branch":"feature-a"}}]}' "feature-a"
 }
 
+test_validate_run_source_branch_accepts_branch_mode_integration_set() {
+  # branch-mode：顶层 source 只显示 base 分支 main，目标分支在「分支集成」
+  # 阶段的 CI_SOURCE_BRANCHES 集成集里，校验必须通过（不能误报参数未生效）。
+  local params run_detail_json
+  params='{"CI_SOURCE_BRANCHES":[{"CI_COMMIT_REF_NAME":"feature-a"},{"CI_COMMIT_REF_NAME":"feature-b"}]}'
+  run_detail_json="$(jq -cn --arg params "$params" '{
+    status: "RUNNING",
+    sources: [{"sign":"api","type":"githubOAuth","data":{"repo":"https://github.com/acme/api.git","branch":"main"}}],
+    stages: [{"name":"分支集成","stageInfo":{"jobs":[{"params":$params}]}}]
+  }')"
+  # 目标分支在集成集中 -> 通过
+  validate_run_source_branch "$run_detail_json" "feature-b"
+  # 前缀分支不在集成集中 -> 仍应失败（精确匹配，避免误判）
+  if (
+    validate_run_source_branch "$run_detail_json" "feature"
+  ) >/tmp/test_dev_deploy.out 2>/tmp/test_dev_deploy.err; then
+    echo "expected prefix branch not in integration set to fail" >&2
+    exit 1
+  fi
+}
+
 main() {
   test_default_payload_appends_without_dropping
   test_deleted_remote_branches_are_pruned_before_building_payload
@@ -140,6 +161,7 @@ main() {
   test_detect_pipeline_trigger_mode
   test_running_branch_payload_uses_repo_url_key
   test_validate_run_source_branch_fails_when_ignored
+  test_validate_run_source_branch_accepts_branch_mode_integration_set
   rm -f /tmp/test_dev_deploy.out /tmp/test_dev_deploy.err
   echo "OK"
 }

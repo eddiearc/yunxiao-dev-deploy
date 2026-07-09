@@ -581,23 +581,42 @@ validate_run_source_branch() {
   local run_detail_json="$1"
   local expected_branch="$2"
 
-  if ! printf '%s' "$run_detail_json" | jq -e --arg branch "$expected_branch" '
+  # 情况一：单分支 / 非 branch-mode 触发，目标分支直接作为 source 分支出现。
+  if printf '%s' "$run_detail_json" | jq -e --arg branch "$expected_branch" '
     any(.sources[]?; (.data.branch // "") == $branch)
   ' >/dev/null; then
-    printf '%s' "$run_detail_json" | jq -c '
-      {
-        status,
-        sources: [.sources[]? | {
-          sign,
-          type,
-          repo: .data.repo,
-          branch: .data.branch,
-          commit: .data.commit
-        }]
-      }
-    ' >&2
-    die "流水线触发参数未生效：run detail 中没有目标分支 ${expected_branch}。请检查流水线 source 模式和 params。"
+    return 0
   fi
+
+  # 情况二：branch-mode 触发。顶层 source 只显示 base 分支（如 main），
+  # 目标分支进入「分支集成」阶段的 CI_SOURCE_BRANCHES 集成分支集
+  # （与 fetch_latest_success_summary 读取集成分支的位置一致）。
+  # 用精确 index 匹配，避免前缀分支（如 feat vs feat-x）误判。
+  if printf '%s' "$run_detail_json" | jq -e --arg branch "$expected_branch" '
+    [
+      .stages[]?
+      | select(.name == "分支集成")
+      | .stageInfo.jobs[]?.params
+      | fromjson?
+      | .CI_SOURCE_BRANCHES[]?.CI_COMMIT_REF_NAME
+    ] | index($branch) != null
+  ' >/dev/null; then
+    return 0
+  fi
+
+  printf '%s' "$run_detail_json" | jq -c '
+    {
+      status,
+      sources: [.sources[]? | {
+        sign,
+        type,
+        repo: .data.repo,
+        branch: .data.branch,
+        commit: .data.commit
+      }]
+    }
+  ' >&2
+  die "流水线触发参数未生效：run detail 中没有目标分支 ${expected_branch}。请检查流水线 source 模式和 params。"
 }
 
 format_run_sources_summary() {
