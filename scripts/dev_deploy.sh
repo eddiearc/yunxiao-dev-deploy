@@ -10,13 +10,17 @@ usage() {
 Usage:
   dev_deploy.sh latest [--pipeline-link URL]
   dev_deploy.sh run [--pipeline-link URL] [--comment TEXT] [--dry-run] [--wait]
-                    [--replace-branches branch-a,branch-b] [--allow-shrink]
+
+触发模型：
+  - 分支模式（isBranchMode=true）：通过 opencli 页面点击触发，只把当前分支加入
+    运行配置，不删除/不重排其他分支；禁止 POP API 触发（会重建分支集成、重复合并
+    历史分支、反复出现已解决的冲突）。opencli 缺失时会打印页面手动触发指引并终止。
+  - 普通代码源（running_branch）：用 OpenAPI runningBranchs 触发当前分支。
 
 Examples:
   dev_deploy.sh latest
   dev_deploy.sh run
   dev_deploy.sh run --dry-run
-  dev_deploy.sh run --replace-branches "feature-a,feature-b" --allow-shrink
   dev_deploy.sh run --pipeline-link "https://flow.aliyun.com/pipelines/123456/current"
   dev_deploy.sh run --comment "dev deploy from codex"
 EOF
@@ -169,17 +173,21 @@ if [[ -z "$run_comment" ]]; then
   run_comment="dev deploy from https://github.com/eddiearc/yunxiao-dev-deploy: ${current_branch}"
 fi
 
+commit_sha="$(git rev-parse HEAD)"
+trigger_via="api"
+params_json=""
+merged_branches=""
+
 case "$trigger_mode" in
   branch_mode)
+    # 分支模式是「分支合并发布」模型：POP API 触发会重建分支集成、把历史分支重新
+    # 合并一遍，已解决的冲突可能反复出现。因此分支模式改为页面（opencli）触发，
+    # 只把当前分支加入运行配置，不删除、不重排其他分支。
     if [[ -n "$replace_branches_csv" ]]; then
-      replacement_branches_json="$(parse_branch_list_csv "$replace_branches_csv")"
-      params_json="$(build_exact_branch_mode_payload "$replacement_branches_json" "$run_comment")"
-    else
-      params_json="$(build_branch_mode_payload "$latest_summary_json" "$current_branch" "$run_comment")"
+      die "分支模式已改为页面（opencli）触发，只追加当前分支，不支持 --replace-branches / --allow-shrink。如需替换整个分支集，请手动到云效页面调整：https://flow.aliyun.com/pipelines/${pipeline_id}/current"
     fi
-
-    ensure_branch_set_not_shrunk "$latest_summary_json" "$params_json" "$allow_shrink"
-    merged_branches="$(printf '%s' "$params_json" | jq -r '.branchModeBranchs | join(", ")')"
+    trigger_via="page"
+    merged_branches="${current_branch}（页面触发，仅追加当前分支）"
     ;;
   running_branch)
     if [[ -n "$replace_branches_csv" ]]; then
@@ -199,6 +207,7 @@ esac
 printf 'pipeline=%s\n' "$pipeline_name"
 printf 'pipeline_id=%s\n' "$pipeline_id"
 printf 'trigger_mode=%s\n' "$trigger_mode"
+printf 'trigger_via=%s\n' "$trigger_via"
 if [[ -n "$primary_source_repo" ]]; then
   printf 'primary_source_repo=%s\n' "$primary_source_repo"
 fi
@@ -209,20 +218,40 @@ printf 'latest_integrated_branches=%s\n' "${latest_branches:-none}"
 if [[ -n "$latest_deleted_branches" ]]; then
   printf 'deleted_integrated_branches=%s\n' "$latest_deleted_branches"
 fi
-printf 'replace_mode=%s\n' "$( [[ -n "$replace_branches_csv" ]] && printf 'true' || printf 'false' )"
-printf 'allow_shrink=%s\n' "$allow_shrink"
 printf 'next_integrated_branches=%s\n' "$merged_branches"
-printf 'params=%s\n' "$params_json"
+if [[ "$trigger_via" == "api" ]]; then
+  printf 'params=%s\n' "$params_json"
+fi
 
 if [[ "$dry_run" == "true" ]]; then
+  if [[ "$trigger_via" == "page" ]]; then
+    printf 'dry_run=true 分支模式将通过 opencli 页面触发（把 %s 加入运行配置后运行），不调用 POP API\n' "$current_branch"
+  fi
   exit 0
 fi
 
-run_response="$(trigger_pipeline_run "$organization_id" "$pipeline_id" "$params_json")"
-run_id="$(extract_triggered_run_id "$run_response")"
-
-printf 'triggered_pipeline_run_id=%s\n' "${run_id:-unknown}"
-printf 'trigger_response=%s\n' "$run_response"
+run_id=""
+if [[ "$trigger_via" == "page" ]]; then
+  runs_json="$(fetch_pipeline_runs "$organization_id" "$pipeline_id")"
+  # 幂等：同一分支同一 commit 的非 POP 页面 run 已存在且未失败/取消时，直接复用。
+  if existing_run_id="$(find_existing_page_run "$organization_id" "$pipeline_id" "$runs_json" "$current_branch" "$commit_sha" "$run_comment")"; then
+    run_id="$existing_run_id"
+    printf 'reused_pipeline_run_id=%s\n' "$run_id"
+  else
+    # 并发防护：已有其它 WAITING/RUNNING run 时，先等它结束，避免并发分支集成打乱冲突处理。
+    active_run_id="$(find_active_pipeline_run "$runs_json")"
+    if [[ -n "$active_run_id" ]]; then
+      die "检测到已有正在进行的 run（pipelineRunId=${active_run_id}，WAITING/RUNNING）。为避免并发分支集成打乱冲突处理，请先等待它结束再触发当前分支：https://flow.aliyun.com/pipelines/${pipeline_id}/current"
+    fi
+    run_id="$(trigger_branch_mode_run_with_opencli "$organization_id" "$pipeline_id" "$current_branch" "$commit_sha" "$run_comment" "$runs_json")"
+    printf 'triggered_pipeline_run_id=%s\n' "$run_id"
+  fi
+else
+  run_response="$(trigger_pipeline_run "$organization_id" "$pipeline_id" "$params_json")"
+  run_id="$(extract_triggered_run_id "$run_response")"
+  printf 'triggered_pipeline_run_id=%s\n' "${run_id:-unknown}"
+  printf 'trigger_response=%s\n' "$run_response"
+fi
 
 if [[ -n "$run_id" ]]; then
   run_detail="$(fetch_pipeline_run_detail "$organization_id" "$pipeline_id" "$run_id")"

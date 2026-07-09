@@ -152,6 +152,73 @@ test_validate_run_source_branch_accepts_branch_mode_integration_set() {
   fi
 }
 
+branch_mode_run_detail() {
+  # 构造一次分支模式 run detail，params 是 JSON 字符串（fromjson）。
+  local status="$1" build_message="$2" trigger_source="$3" remark="$4" branch="$5" commit="$6"
+  local params
+  params="$(jq -cn \
+    --arg bm "$build_message" \
+    --arg ts "$trigger_source" \
+    --arg remark "$remark" \
+    --arg branch "$branch" \
+    --arg commit "$commit" '{
+      BUILD_MESSAGE: $bm,
+      FLOW_SYSTEM_IDENTIFICATION_PARAM_TRIGGER_SOURCE: $ts,
+      FLOW_INST_RUNNING_COMMENT: $remark,
+      CI_SOURCE_BRANCHES: [{CI_COMMIT_REF_NAME: $branch, CI_COMMIT_ID: $commit}]
+    }')"
+  jq -cn --arg status "$status" --arg params "$params" '{
+    status: $status,
+    stages: [{name: "分支集成", stageInfo: {jobs: [{params: $params}]}}]
+  }'
+}
+
+test_run_matches_non_pop_page_trigger() {
+  local run_json
+  run_json="$(branch_mode_run_detail "RUNNING" "页面手动触发" "CONSOLE" "dev deploy: feature-a" "feature-a" "abcdef1234567890")"
+
+  # 同分支同 commit 的非 POP 页面触发 -> 匹配
+  if ! run_matches_branch_commit_and_non_pop_trigger "$run_json" "feature-a" "abcdef1234567890" "dev deploy: feature-a"; then
+    echo "expected non-POP page trigger of feature-a@abcdef1234567890 to match" >&2
+    exit 1
+  fi
+
+  # commit 前缀匹配（短 SHA） -> 仍匹配
+  if ! run_matches_branch_commit_and_non_pop_trigger "$run_json" "feature-a" "abcdef1" "dev deploy: feature-a"; then
+    echo "expected short-SHA prefix commit to match" >&2
+    exit 1
+  fi
+
+  # 不同分支 -> 不匹配（精确 index，避免误判）
+  if run_matches_branch_commit_and_non_pop_trigger "$run_json" "feature-b" "abcdef1234567890" "dev deploy: feature-b"; then
+    echo "expected different branch not to match" >&2
+    exit 1
+  fi
+}
+
+test_run_matches_rejects_pop_api_trigger() {
+  local run_json
+  run_json="$(branch_mode_run_detail "RUNNING" "POP API 触发" "POP_API" "dev deploy: feature-a" "feature-a" "abcdef1234567890")"
+
+  # POP API 触发的 run 不应被当作可复用的页面 run
+  if run_matches_branch_commit_and_non_pop_trigger "$run_json" "feature-a" "abcdef1234567890" "dev deploy: feature-a"; then
+    echo "expected POP_API triggered run to be rejected" >&2
+    exit 1
+  fi
+}
+
+test_find_active_pipeline_run_returns_first_active() {
+  local runs_json result
+
+  runs_json='[{"pipelineRunId":10,"status":"SUCCESS"},{"pipelineRunId":11,"status":"RUNNING"},{"pipelineRunId":12,"status":"WAITING"}]'
+  result="$(find_active_pipeline_run "$runs_json")"
+  assert_eq '11' "$result" "first WAITING/RUNNING run should be returned"
+
+  runs_json='[{"pipelineRunId":10,"status":"SUCCESS"},{"pipelineRunId":11,"status":"FAIL"}]'
+  result="$(find_active_pipeline_run "$runs_json")"
+  assert_eq '' "$result" "no active run should yield empty result"
+}
+
 main() {
   test_default_payload_appends_without_dropping
   test_deleted_remote_branches_are_pruned_before_building_payload
@@ -162,6 +229,9 @@ main() {
   test_running_branch_payload_uses_repo_url_key
   test_validate_run_source_branch_fails_when_ignored
   test_validate_run_source_branch_accepts_branch_mode_integration_set
+  test_run_matches_non_pop_page_trigger
+  test_run_matches_rejects_pop_api_trigger
+  test_find_active_pipeline_run_returns_first_active
   rm -f /tmp/test_dev_deploy.out /tmp/test_dev_deploy.err
   echo "OK"
 }
