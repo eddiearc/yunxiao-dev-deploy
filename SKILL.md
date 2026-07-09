@@ -18,7 +18,7 @@ description: 使用阿里云云效 OpenAPI 部署当前仓库的 dev 环境。�
 7. 获取流水线详情，如果名称包含 `prod`，严格阻止执行；如果 403，明确提示需要 `流水线 / 只读`
 8. 获取最近一次成功部署，提取当前 release 分支和已集成分支列表
 9. 对已集成分支先做一次远端存在性校验；如果某个历史分支已经从 `origin` 删除，默认把它从本次分支集中剔除，并在输出里显式打印
-10. 把当前分支加入清洗后的分支列表，去重后触发 dev 部署；如果 403，明确提示需要 `流水线运行实例 / 读写`；如果本次参数会删掉仍然存在于远端的已部署分支，默认直接失败
+10. 触发 dev 部署。**分支模式（`isBranchMode=true`）默认走「页面点击」触发（依赖 opencli）**，只把当前分支加入运行配置，不删除、不重排其他分支，禁止 POP API 触发（POP API 会重建分支集成、重复合并历史分支、让已解决的冲突反复出现）；opencli 缺失时打印页面手动触发指引并终止。普通代码源（`running_branch`）用 OpenAPI `runningBranchs` 触发当前分支；触发接口 403 时，明确提示需要 `流水线运行实例 / 读写`
 11. 如果运行详情里出现阻塞动作，先区分是不是 `CONFLICT_MERGE`。如果是分支冲突，默认优先走“在当前 `pipelineRunId` 的 `releaseBranch` 上解决，然后对当前 run 执行冲突解决 action”这条路径
 12. 不要先取消当前阻塞 run，也不要先重触发新 run。默认先保留当前 `pipelineRunId`，因为云效可能会在同一个 run 里按顺序暴露多轮冲突
 13. 在 `releaseBranch` 解决时，必须使用当前 run detail 里最新的 `featureBranch`、`featureBranchCommitId`、`releaseBranch`、`jobId`、`actionId`；不允许沿用上一轮冲突的信息
@@ -31,6 +31,27 @@ description: 使用阿里云云效 OpenAPI 部署当前仓库的 dev 环境。�
 20. 如果判断只有直接修改 `featureBranch` / 原业务分支才能继续，则停止自动处理并向用户索取明确答复；没有用户明确答复，不要修改业务分支
 21. 如果是人工执行、人工确认等非冲突阻塞，再提醒用户去云效页面处理，不继续盲等
 22. **默认跟进到终态**：触发部署后，必须持续轮询直到 run 进入 `SUCCESS` / `FAIL` / `CANCELED` / `ABORTED` / `TERMINATED`，或直到用户明确要求停止。不要触发后就放手——用户说"部署"意味着整个"触发 → 解冲突 → 等待 → 验证"闭环
+
+## 分支模式触发：页面点击，禁止 POP API
+
+分支模式（`isBranchMode=true`）流水线是「分支合并发布 / 分支集成」模型：一次 run 会把一组
+feature 分支合并到 release 分支再发布。**用 POP API（`POST .../runs`）触发会重建整个分支集成
+run，把历史分支重新合并一遍，已经解决过的合并冲突可能每次都要重新处理。** 因此本 skill 对
+分支模式默认改为「页面点击」触发：
+
+- 依赖 opencli 打开云效运行配置弹窗，只把当前分支加入运行配置；如果分支已在列表中，不删除、
+  不重排其他分支，直接运行。
+- opencli 未安装时，**停止自动触发，绝不回退到 POP API**；打印指引：给出流水线 URL、解释为什么
+  不能用 API 自动化，并建议 `npm install -g @jackwener/opencli`，或手动到页面按同样规则触发。
+  可以主动帮用户 `open <url>` 打开页面。
+- 触发前先做幂等与并发检查：同一分支同一 commit 的非 POP 页面 run 已存在且处于
+  `SUCCESS` / `RUNNING` / `WAITING` 时直接复用；如果已有其它 `WAITING` / `RUNNING` run，先等它
+  结束，避免并发分支集成打乱后续冲突处理。
+- 触发后 run 查询、等待、冲突处理仍走 API：冲突解决用 `ExecutePipelineJobAction` 在
+  `releaseBranch` 上收口，**不要用 opencli 页面点击去做冲突动作**。
+
+普通代码源（`running_branch`，`data.repo` 存在且非分支模式）不受影响，继续用 OpenAPI
+`runningBranchs` 触发，因为它只跑单一分支、不做分支集成合并。
 
 ## 配置优先级
 
@@ -230,29 +251,16 @@ bash scripts/wait_pipeline_run.sh 1234
 
 脚本会先读取 pipeline config，自动识别 source 模式：
 
-- `trigger_mode=branch_mode`：代码源 `data.isBranchMode=true`，使用 `branchModeBranchs`。
+- `trigger_mode=branch_mode`：代码源 `data.isBranchMode=true`，改用 opencli 页面点击触发（禁止 POP API，见「分支模式触发」一节）。
 - `trigger_mode=running_branch`：普通代码源流水线，使用云效 OpenAPI `runningBranchs`，key 为代码源 repo URL，value 为目标分支。
 
 触发后必须读取 run detail 校验 `sources[].data.branch` 确实等于当前分支；如果传参被忽略，脚本会直接失败，不再假定部署成功。
 
-当前仓库的 dev 流水线是“分支模式”时，不是直接部署单一业务分支。
+当前仓库的 dev 流水线是“分支模式”时，不用 POP API 触发，而是用 opencli 页面点击触发（原因见「分支模式触发」一节）：
 
-触发时使用 `branchModeBranchs`：
-
-- 先读取最近一次成功部署里的已集成分支
-- 先剔除那些已经从 `origin` 删除的历史分支，并把它们作为 `deleted_integrated_branches` 打印出来
-- 再把当前分支追加进去
-- 去重后作为本次运行参数
-- 如果新分支集比最近一次成功部署里“仍然存在于远端”的分支更小，默认直接失败，防止静默覆盖
-- 只有显式传 `--replace-branches`，并在确实发生 shrink 时再加 `--allow-shrink`，才允许覆盖
-
-示意：
-
-```json
-{
-  "params": "{\"branchModeBranchs\":[\"feature/weather\",\"codex/foo\"],\"comment\":\"dev deploy from codex: codex/foo\"}"
-}
-```
+- 只把当前分支加入运行配置，不删除、不重排其他分支。
+- 不再构造 / 提交 `branchModeBranchs` 参数，也不再支持 `--replace-branches` / `--allow-shrink`（POP API 时代的整集替换语义）。如需替换整个分支集，请手动到云效页面调整。
+- `latest` 仍会读取最近一次成功部署的已集成分支，并把已从 `origin` 删除的历史分支作为 `deleted_integrated_branches` 打印出来，方便判断是否需要手动清理页面上的分支集。
 
 普通代码源流水线示意：
 
@@ -268,6 +276,7 @@ bash scripts/wait_pipeline_run.sh 1234
 - 当前分支未推远程时，必须直接终止
 - 当前分支是 `main` / `master` 时，必须直接终止
 - 默认只用于 dev 环境，不允许拿这个 skill 触发生产发布
+- 分支模式（`isBranchMode=true`）禁止用 POP API 触发，必须走 opencli 页面点击；opencli 缺失时停止并指引手动触发，不回退 API
 - 不能在未读取 `.yunxiao/project.env` 的情况下直接触发部署
 - 不能因为“之前某次对话里用过某个 pipelineId”就默认复用
 
@@ -296,7 +305,7 @@ bash scripts/wait_pipeline_run.sh 1234
 - 流水线名称
 - 当前分支
 - 上一次已部署分支列表
-- 本次实际提交的 `branchModeBranchs`
+- 触发方式 `trigger_via`（page / api）与本次追加或提交的分支
 - 新的 `pipelineRunId`
 
 如果用户明确要求持续跟踪部署结果，或已经进入 `CONFLICT_MERGE` 处理流程：

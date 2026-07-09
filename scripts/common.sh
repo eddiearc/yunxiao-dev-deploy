@@ -581,23 +581,42 @@ validate_run_source_branch() {
   local run_detail_json="$1"
   local expected_branch="$2"
 
-  if ! printf '%s' "$run_detail_json" | jq -e --arg branch "$expected_branch" '
+  # 情况一：单分支 / 非 branch-mode 触发，目标分支直接作为 source 分支出现。
+  if printf '%s' "$run_detail_json" | jq -e --arg branch "$expected_branch" '
     any(.sources[]?; (.data.branch // "") == $branch)
   ' >/dev/null; then
-    printf '%s' "$run_detail_json" | jq -c '
-      {
-        status,
-        sources: [.sources[]? | {
-          sign,
-          type,
-          repo: .data.repo,
-          branch: .data.branch,
-          commit: .data.commit
-        }]
-      }
-    ' >&2
-    die "流水线触发参数未生效：run detail 中没有目标分支 ${expected_branch}。请检查流水线 source 模式和 params。"
+    return 0
   fi
+
+  # 情况二：branch-mode 触发。顶层 source 只显示 base 分支（如 main），
+  # 目标分支进入「分支集成」阶段的 CI_SOURCE_BRANCHES 集成分支集
+  # （与 fetch_latest_success_summary 读取集成分支的位置一致）。
+  # 用精确 index 匹配，避免前缀分支（如 feat vs feat-x）误判。
+  if printf '%s' "$run_detail_json" | jq -e --arg branch "$expected_branch" '
+    [
+      .stages[]?
+      | select(.name == "分支集成")
+      | .stageInfo.jobs[]?.params
+      | fromjson?
+      | .CI_SOURCE_BRANCHES[]?.CI_COMMIT_REF_NAME
+    ] | index($branch) != null
+  ' >/dev/null; then
+    return 0
+  fi
+
+  printf '%s' "$run_detail_json" | jq -c '
+    {
+      status,
+      sources: [.sources[]? | {
+        sign,
+        type,
+        repo: .data.repo,
+        branch: .data.branch,
+        commit: .data.commit
+      }]
+    }
+  ' >&2
+  die "流水线触发参数未生效：run detail 中没有目标分支 ${expected_branch}。请检查流水线 source 模式和 params。"
 }
 
 format_run_sources_summary() {
@@ -668,6 +687,331 @@ trigger_pipeline_run() {
   fi
 
   printf '%s\n' "$API_BODY"
+}
+
+# ---------------------------------------------------------------------------
+# 分支模式（branch integration）页面触发
+#
+# 分支模式流水线是「分支合并发布」模型：POP API 触发会重建分支集成 run，把历史
+# 分支重新合并一遍，已经解决过的合并冲突可能每次都要重新处理。因此分支模式默认
+# 改为「页面点击」触发（依赖 opencli），只把当前分支加入运行配置，不删除、不重排
+# 其他分支。冲突处理仍走 API（ExecutePipelineJobAction），只有初次触发用页面。
+# ---------------------------------------------------------------------------
+
+run_status() {
+  local run_detail_json="$1"
+  printf '%s' "$run_detail_json" | jq -r '.status // ""'
+}
+
+fetch_pipeline_runs() {
+  local organization_id="$1"
+  local pipeline_id="$2"
+
+  if ! api_request GET "/oapi/v1/flow/organizations/${organization_id}/pipelines/${pipeline_id}/runs?perPage=20&page=1"; then
+    if [[ "$API_STATUS" == "403" ]]; then
+      die_permission_denied "获取流水线运行列表" "pipeline-run-read"
+    fi
+    die "获取流水线运行列表失败。HTTP ${API_STATUS}: ${API_BODY}"
+  fi
+  printf '%s\n' "$API_BODY"
+}
+
+# 判断一次 run 是否是「当前分支 + 当前 commit」的非 POP 页面触发。
+# 分支集成信息在云效可能有两种表示（CI_SOURCE_BRANCHES / branchRepoInfo），
+# 这里对两者取并集，避免因字段命名差异误判。
+run_matches_branch_commit_and_non_pop_trigger() {
+  local run_json="$1"
+  local branch="$2"
+  local commit="$3"
+  local comment="$4"
+
+  printf '%s' "$run_json" | jq -e --arg branch "$branch" --arg commit "$commit" --arg comment "$comment" '
+    def same_commit($value; $commit):
+      ($value == $commit)
+      or (($value | length) >= 7 and ($commit | startswith($value)))
+      or (($commit | length) >= 7 and ($value | startswith($commit)));
+
+    [
+      .stages[]?
+      | select(.name == "分支集成")
+      | .stageInfo.jobs[]?.params
+      | fromjson?
+      | (.FLOW_INST_RUNNING_COMMENT // .BUILD_REMARK // "") as $remark
+      | (.BUILD_MESSAGE // "") as $buildmsg
+      | (((.FLOW_SYSTEM_IDENTIFICATION_PARAM_TRIGGER_SOURCE // "") | ascii_upcase)) as $source
+      | (
+          ((.CI_SOURCE_BRANCHES // [])
+            | map({name: .CI_COMMIT_REF_NAME, commit: (.CI_COMMIT_ID // .CI_COMMIT_SHA // "")}))
+          + ([ .branchRepoInfo? | fromjson? | .[]?.featureBranchs[]?
+                | {name: .branchName, commit: (.commitId // .commit // .commitSha // .featureBranchCommitId // "")} ])
+        ) as $entries
+      | select(
+          ($buildmsg | contains("页面手动触发"))
+          and ($source != "POP_API" and $source != "POP")
+          and (($entries | map(.name) | index($branch)) != null)
+          and (
+            if $commit == "" then
+              ($remark == $comment)
+            else
+              ($remark | contains($branch + "@" + $commit))
+              or any(
+                $entries[]
+                | select(.name == $branch)
+                | .commit
+                | select(type == "string" and length > 0);
+                same_commit(.; $commit)
+              )
+            end
+          )
+        )
+    ] | length > 0
+  ' >/dev/null
+}
+
+# 幂等复用：同一分支同一 commit、非 POP 的页面 run 已存在且处于
+# SUCCESS / RUNNING / WAITING 时，直接复用，不再重复点页面创建新 run。
+find_existing_page_run() {
+  local organization_id="$1"
+  local pipeline_id="$2"
+  local runs_json="$3"
+  local branch="$4"
+  local commit="$5"
+  local comment="$6"
+  local run_id run_json status
+
+  while IFS= read -r run_id; do
+    [[ -n "$run_id" ]] || continue
+    run_json="$(fetch_pipeline_run_detail "$organization_id" "$pipeline_id" "$run_id")"
+    status="$(run_status "$run_json")"
+    case "$status" in
+      SUCCESS|RUNNING|WAITING)
+        if run_matches_branch_commit_and_non_pop_trigger "$run_json" "$branch" "$commit" "$comment"; then
+          printf '%s\n' "$run_id"
+          return 0
+        fi
+        ;;
+    esac
+  done < <(printf '%s' "$runs_json" | jq -r '.[]? | ((.pipelineRunId // .id // .runId) | tostring)')
+
+  return 1
+}
+
+# 返回第一个处于 WAITING / RUNNING 的 run id（用于并发防护）。
+find_active_pipeline_run() {
+  local runs_json="$1"
+
+  printf '%s' "$runs_json" | jq -r '
+    .[]?
+    | ((.pipelineRunId // .id // .runId) | tostring) as $id
+    | (.status // "") as $status
+    | select($id != "" and $id != "null" and ($status == "WAITING" or $status == "RUNNING"))
+    | $id
+  ' | head -n 1
+}
+
+print_branch_mode_page_trigger_help() {
+  local pipeline_id="$1"
+  local branch="$2"
+  local url="https://flow.aliyun.com/pipelines/${pipeline_id}/current"
+
+  cat >&2 <<EOF
+分支模式（branch integration）流水线禁止用 POP API 触发。
+原因：POP API 触发会重建分支集成 run，把历史分支重新合并一遍，
+已经解决过的合并冲突可能每次都要重新处理，非常容易反复踩坑。
+
+因此分支模式默认改为「页面点击」触发，只把当前分支加入运行配置，
+不删除、不重排其他分支。
+
+自动化方式（推荐）：安装 opencli 后重跑本脚本，即可自动完成页面点击：
+   npm install -g @jackwener/opencli
+
+或手动到云效页面触发：
+   ${url}
+
+   手动步骤：
+   - 点击「运行」
+   - 在「运行配置」里确认当前分支存在：${branch}
+   - 若不存在，点「添加运行分支」并添加该分支
+   - 不删除、不替换、不重排其他分支
+   - 点弹窗底部「运行」
+
+触发后，run 查询 / 等待 / 冲突处理仍可继续用本脚本（这些走 API，不受影响）：
+   bash scripts/wait_pipeline_run.sh <pipelineRunId>
+EOF
+}
+
+# 用 opencli 页面点击触发分支模式 run：打开运行配置弹窗，若当前分支不在集成列表
+# 就「添加运行分支」，写运行备注，点「运行」。触发后轮询 runs，找到新出现的、
+# 匹配当前分支/commit 的非 POP run 并返回其 id。opencli 缺失时打印指引并终止，
+# 绝不回退到 POP API。
+trigger_branch_mode_run_with_opencli() {
+  local organization_id="$1"
+  local pipeline_id="$2"
+  local branch="$3"
+  local commit="$4"
+  local comment="$5"
+  local before_runs_json="$6"
+  local session="${OPENCLI_YUNXIAO_SESSION:-yunxiao-dev-deploy}"
+  local url="https://flow.aliyun.com/pipelines/${pipeline_id}/current"
+  local branch_json comment_json js before_ids_json after_runs_json new_run_id candidate_ids_json run_json
+
+  if ! command -v opencli >/dev/null 2>&1; then
+    print_branch_mode_page_trigger_help "$pipeline_id" "$branch"
+    die "分支模式需要 opencli 才能自动页面触发；已拒绝回退到 POP API。"
+  fi
+
+  branch_json="$(jq -cn --arg value "$branch" '$value')"
+  comment_json="$(jq -cn --arg value "$comment" '$value')"
+
+  printf 'opencli_session=%s\n' "$session" >&2
+  if ! opencli browser "$session" open "$url" >&2; then
+    print_branch_mode_page_trigger_help "$pipeline_id" "$branch"
+    die "opencli 打开云效流水线页面失败。"
+  fi
+  if ! opencli browser "$session" wait time 2 >&2; then
+    print_branch_mode_page_trigger_help "$pipeline_id" "$branch"
+    die "opencli 等待云效流水线页面加载失败。"
+  fi
+
+  read -r -d '' js <<'OPENCLI_JS' || true
+(async () => {
+  const branch = __BRANCH__;
+  const comment = __COMMENT__;
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const visible = (el) => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const text = (el) => ((el && (el.innerText || el.textContent)) || "").trim();
+  const buttons = (root = document) => [...root.querySelectorAll("button")].filter(visible);
+  const buttonByText = (root, label) => buttons(root).find(btn => text(btn) === label);
+  const dialogs = () => [...document.querySelectorAll("[role=dialog]")].filter(visible);
+  const dialogByText = (needle) => dialogs().find(dialog => text(dialog).includes(needle));
+  const waitFor = async (fn, description, timeout = 15000) => {
+    const started = Date.now();
+    while (Date.now() - started < timeout) {
+      const value = fn();
+      if (value) return value;
+      await sleep(300);
+    }
+    throw new Error("timeout waiting for " + description);
+  };
+  const setNativeValue = (el, value) => {
+    const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+    setter.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const words = (el) => text(el).split(/\s+/).filter(Boolean);
+  const hasBranch = (dialog) => words(dialog).includes(branch);
+
+  let runConfig = dialogByText("运行配置");
+  if (!runConfig) {
+    const topRun = buttons(document).find(btn => text(btn) === "运行" && !btn.closest("[role=dialog]"));
+    if (!topRun) throw new Error("top run button not found");
+    topRun.click();
+    runConfig = await waitFor(() => dialogByText("运行配置"), "run config dialog");
+  }
+
+  const branchesBefore = words(runConfig).filter(item =>
+    item === branch ||
+    item.startsWith("codex/") ||
+    item.startsWith("feature/") ||
+    item.startsWith("feat/")
+  );
+  let branchAdded = false;
+  if (!hasBranch(runConfig)) {
+    const addBranch = buttonByText(runConfig, "添加运行分支");
+    if (!addBranch) throw new Error("add branch button not found");
+    addBranch.click();
+
+    const addDialog = await waitFor(() => dialogByText("添加运行分支"), "add branch dialog");
+    const input = await waitFor(
+      () => addDialog.querySelector("#branchName, input[placeholder*='分支']"),
+      "branch input"
+    );
+    input.focus();
+    setNativeValue(input, branch);
+    await sleep(1200);
+
+    const option = [...document.querySelectorAll("[role=option], .next-menu-item, .next-select-menu-item, li")]
+      .find(el => visible(el) && words(el).includes(branch));
+    if (option) {
+      option.click();
+      await sleep(500);
+    }
+
+    const submitAdd = buttonByText(addDialog, "添加");
+    if (!submitAdd) throw new Error("add submit button not found");
+    if (submitAdd.disabled || /disabled/.test(submitAdd.className)) {
+      throw new Error("add submit button is disabled: " + text(addDialog));
+    }
+    submitAdd.click();
+
+    runConfig = await waitFor(() => {
+      const dialog = dialogByText("运行配置");
+      return dialog && hasBranch(dialog) ? dialog : null;
+    }, "branch in run config", 20000);
+    branchAdded = true;
+  }
+
+  const remark = runConfig.querySelector("textarea[placeholder*='运行备注'], textarea");
+  if (remark) {
+    setNativeValue(remark, comment);
+  }
+
+  const submitRun = buttonByText(runConfig, "运行");
+  if (!submitRun) throw new Error("dialog run button not found");
+  if (submitRun.disabled || /disabled/.test(submitRun.className)) {
+    throw new Error("dialog run button is disabled");
+  }
+  submitRun.click();
+  await sleep(1200);
+
+  const confirmDialog = dialogs().find(dialog => dialog !== runConfig && /确认|提示/.test(text(dialog)));
+  if (confirmDialog) {
+    const confirm = buttonByText(confirmDialog, "确定") || buttonByText(confirmDialog, "确认");
+    if (confirm) {
+      confirm.click();
+      await sleep(600);
+    }
+  }
+
+  return { submitted: true, branch, branchAdded, branchesBefore };
+})()
+OPENCLI_JS
+
+  js="${js//__BRANCH__/$branch_json}"
+  js="${js//__COMMENT__/$comment_json}"
+
+  if ! opencli browser "$session" eval "$js" >&2; then
+    print_branch_mode_page_trigger_help "$pipeline_id" "$branch"
+    die "opencli 提交云效页面触发失败。"
+  fi
+
+  before_ids_json="$(printf '%s' "$before_runs_json" | jq -c '[.[]? | ((.pipelineRunId // .id // .runId) | tostring)]')"
+  for _ in {1..20}; do
+    after_runs_json="$(fetch_pipeline_runs "$organization_id" "$pipeline_id")"
+    candidate_ids_json="$(
+      printf '%s' "$after_runs_json" | jq -r --argjson before "$before_ids_json" '
+        [
+          .[]?
+          | ((.pipelineRunId // .id // .runId) | tostring) as $id
+          | select($id != "" and (($before | index($id)) | not))
+          | $id
+        ]
+      '
+    )"
+    while IFS= read -r new_run_id; do
+      [[ -n "$new_run_id" ]] || continue
+      run_json="$(fetch_pipeline_run_detail "$organization_id" "$pipeline_id" "$new_run_id")"
+      if run_matches_branch_commit_and_non_pop_trigger "$run_json" "$branch" "$commit" "$comment"; then
+        printf '%s\n' "$new_run_id"
+        return 0
+      fi
+    done < <(printf '%s' "$candidate_ids_json" | jq -r '.[]?')
+    sleep 3
+  done
+
+  die "页面触发已提交，但没有找到匹配的非 POP 流水线 run。"
 }
 
 terminate_pipeline_run() {

@@ -9,10 +9,10 @@
 - 自动发现或校验 `organizationId`
 - 从项目本地配置读取 dev 流水线
 - 拒绝名称带 `prod` 的流水线
-- 自动识别流水线 source 模式：分支模式用 `branchModeBranchs`，普通代码源用 `runningBranchs`
-- 分支模式下读取最近一次成功部署里已经集成的分支，默认追加当前分支且不允许静默删掉已有分支
+- 自动识别流水线 source 模式（读 `data.isBranchMode`）：分支模式走 opencli 页面点击触发，普通代码源走 OpenAPI `runningBranchs`
+- 分支模式禁止 POP API 触发（会重建分支集成、重复合并历史分支，让已解决的冲突反复出现），改用 opencli 只把当前分支加入运行配置，不删除、不重排其他分支
+- opencli 未安装时不回退 API，而是打印页面手动触发指引并终止
 - 普通代码源流水线下用 repo URL -> 当前分支构造 `runningBranchs`，触发后校验 run detail 的实际 source branch
-- 如果确实要覆盖分支集，必须在分支模式下显式传 `--replace-branches`；如果发生 shrink，还要再加 `--allow-shrink`
 - 识别阻塞态；如果是 `CONFLICT_MERGE`，默认优先在 `releaseBranch` 解决，且优先使用独立 git worktree 处理，修改业务分支前必须得到用户明确答复
 
 ## 目录结构
@@ -172,14 +172,6 @@ bash scripts/dev_deploy.sh run --dry-run
 bash scripts/dev_deploy.sh run
 ```
 
-显式覆盖分支集：
-
-```bash
-bash scripts/dev_deploy.sh run \
-  --replace-branches "feature-a,feature-b" \
-  --allow-shrink
-```
-
 首次通过链接注入流水线 ID：
 
 ```bash
@@ -193,24 +185,30 @@ bash scripts/dev_deploy.sh run \
 bash scripts/wait_pipeline_run.sh 1234
 ```
 
-## 分支模式保护
+## 分支模式：页面点击触发，禁止 POP API
 
-默认 `run` 的语义是：
+**为什么不用 API 自动触发？** 分支模式（`data.isBranchMode=true`）流水线是「分支合并
+发布 / 分支集成」模型：一次 run 会把一组 feature 分支合并到 release 分支再发布。如果用
+POP API（`POST .../pipelines/{id}/runs`）触发，云效会**重建整个分支集成 run，把历史分支
+重新合并一遍**——你上一次辛辛苦苦解决过的合并冲突，可能每次部署都要重新解一遍。这在多人
+共享的 dev 流水线上尤其痛。
 
-- 读取最近一次成功部署里的分支集
-- 把当前分支追加进去
-- 去重后再触发
+所以本 skill 对分支模式**默认改为「页面点击」触发**（等价于人在云效页面点「运行」）：
 
-这意味着脚本默认不会把别人已经在 dev 上的分支静默踢掉。
+- 依赖 [opencli](https://www.npmjs.com/package/@jackwener/opencli) 打开运行配置弹窗，
+  只把当前分支加入运行配置；如果分支已在列表里，不删除、不重排其他分支，直接运行。
+- 触发前做幂等与并发检查：同一分支同一 commit 的非 POP 页面 run 已存在且处于
+  `SUCCESS`/`RUNNING`/`WAITING` 时直接复用；已有其它 `WAITING`/`RUNNING` run 时先等它结束。
+- **没装 opencli 时不会偷偷回退到 POP API**，而是停下来打印指引：给出流水线 URL、解释
+  原因，并建议 `npm install -g @jackwener/opencli` 或手动到页面按同样规则触发。
+- 因此分支模式下 `--replace-branches` / `--allow-shrink` 已不再支持（那是 POP API 时代的
+  整集替换语义）；如需替换整个分支集，请手动到云效页面调整。
 
-如果你传了 `--replace-branches`，脚本会把它视为“我明确要覆盖分支集”。  
-但只要这个新分支集会删掉上一次成功部署里的任意分支，仍然会直接失败，除非你额外显式传：
+普通代码源（`running_branch`，`data.repo` 存在且非分支模式）不受影响，继续用 OpenAPI
+`runningBranchs` 触发——它只跑单一分支、不做分支集成合并，用 API 是安全的。
 
-```bash
---allow-shrink
-```
-
-这样误操作至少需要两个明确动作，不能再被默认参数悄悄覆盖。
+触发后的 run 查询、等待、`CONFLICT_MERGE` 冲突处理仍然走 API（`ExecutePipelineJobAction`），
+只有「初次触发」这一步用页面点击。
 
 ## 冲突处理工作区约定
 
@@ -236,6 +234,7 @@ bash scripts/wait_pipeline_run.sh 1234
 - `curl`
 - `jq`
 - `git`
+- [`opencli`](https://www.npmjs.com/package/@jackwener/opencli)（可选；仅分支模式自动页面触发需要，`npm install -g @jackwener/opencli`。未安装时分支模式会打印手动触发指引并终止）
 
 ## 许可证
 
